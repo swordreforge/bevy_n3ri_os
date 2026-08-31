@@ -6,7 +6,7 @@
 
 伪操作系统桌面环境，使用 Bevy 0.19 引擎从零搭建。复刻 [os.inori.ai](https://os.inori.ai) 的视觉风格与交互体验。
 
-![total](/home/swordreforge/project/业余项目/bevy_n3ri_os/total.png)
+![total](total.png)
 
 ## 项目目的
 
@@ -62,9 +62,9 @@ Bevy 0.19 的 UI 系统构建在 taffy 之上，原生 Flexbox 布局在桌面�
 | 日志查看器 | 系统日志浏览 |
 | 文本阅读器 | 纯文本阅读 |
 
-![total](/home/swordreforge/project/业余项目/bevy_n3ri_os/some_func.png)
+![total](some_func.png)
 
-![pasted-image](/home/swordreforge/project/业余项目/bevy_n3ri_os/pasted-image.png)
+![pasted-image](pasted-image.png)
 
 ## 架构
 
@@ -102,7 +102,7 @@ cargo run -p n3ri-minimal --features embed-assets
 
 ### 平台限制
 
-> **仅支持 Linux Wayland。** 在 X11 下可能可以运行但未经测试。最佳体验在 [niri](https://github.com/YaLTeR/niri) 桌面环境，其窗口位置对齐机制能与本项目的窗口吸附逻辑正确配合。
+> **仅支持 Linux Wayland。** 在 X11 下可能可以运行但未经测试。最佳体验在 [niri](https://github.com/niri-wm/niri) 桌面环境，其窗口位置对齐机制能与本项目的窗口吸附逻辑正确配合。
 
 ## 开源致谢
 
@@ -110,10 +110,10 @@ cargo run -p n3ri-minimal --features embed-assets
 
 | 库 | 作者/组织 | 用途 |
 | --- | --- | --- |
-| [Bevy](https://github.com/bevyengine/bevy) | Bevy Contributors | 游戏引擎 / UI 框架 |
-| [bevy\\_tweening](https://github.com/creative-homeless-guy/bevy_tweening) | creative-homeless-guy | 动画插值 |
+| [Bevy](https://github.com/bevyengine/bevy) | bevyengine | 游戏引擎 / UI 框架 |
+| [bevy\\_tweening](https://github.com/djeedai/bevy_tweening) | djeedai | 动画插值 |
 | [bevy\\_woff](https://crates.io/crates/bevy_woff) | bevy 社区 | WOFF/WOFF2 字体加载 |
-| [portable-pty](https://github.com/dalance/portable-pty) | dalance | 跨平台 PTY |
+| [portable-pty](https://github.com/wrz/portable-pty) | wrz | 跨平台 PTY |
 | [chrono](https://github.com/chronotope/chrono) | chronotope | 时间日期处理 |
 | [reqwest](https://github.com/seanmonstar/reqwest) | seanmonstar | HTTP 客户端（LLM 通信） |
 | [icu\\_provider](https://github.com/unicode-org/icu4x) | Unicode / ICU4X | 文本分段（中文支持） |

@@ -1,0 +1,15 @@
+{
+  "volumes": [
+    100,
+    100,
+    0,
+    0
+  ],
+  "toggles": [
+    true,
+    true,
+    false,
+    false
+  ],
+  "quality_idx": 1
+}

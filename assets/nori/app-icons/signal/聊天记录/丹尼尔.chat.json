@@ -1,0 +1,160 @@
+{
+  "chat_history": [
+    {
+      "timestamp": "2月12日 21:30",
+      "sender": "丹尼尔",
+      "type": "text",
+      "content": "我今天做了件很不像我事！"
+    },
+    {
+      "timestamp": "2月12日 21:31",
+      "sender": "丹尼尔",
+      "type": "image",
+      "content": "[图片: 一本《我的第一本养猫书》]"
+    },
+    {
+      "timestamp": "2月12日 21:33",
+      "sender": "丹尼尔",
+      "type": "text",
+      "content": "想不到吧。明天才能去店里接猫，但我已经迫不及待咯"
+    },
+    {
+      "timestamp": "3月20日 12:40",
+      "sender": "丹尼尔",
+      "type": "text",
+      "content": "嗯"
+    },
+    {
+      "timestamp": "3月20日 13:55",
+      "sender": "丹尼尔",
+      "type": "text",
+      "content": "求教他第一天就就坐在我的键盘上不动怎么办"
+    },
+    {
+      "timestamp": "3月20日 22:10",
+      "sender": "丹尼尔",
+      "type": "image",
+      "content": "[图片: 猫咪大脸特写]"
+    },
+    {
+      "timestamp": "3月20日 22:11",
+      "sender": "丹尼尔",
+      "type": "text",
+      "content": "近距离美照"
+    },
+    {
+      "timestamp": "4月15日 19:08",
+      "sender": "丹尼尔",
+      "type": "text",
+      "content": "我看了预印本，感觉理论推导部分还是有点问题？而且写得太生涩难懂了。回头当面聊"
+    },
+    {
+      "timestamp": "6月18日 20:30",
+      "sender": "丹尼尔",
+      "type": "image",
+      "content": "[图片: 猫咪在电脑前大笑]"
+    },
+    {
+      "timestamp": "6月18日 20:31",
+      "sender": "丹尼尔",
+      "type": "text",
+      "content": "我放弃了"
+    },
+    {
+      "timestamp": "6月19日 21:00",
+      "sender": "丹尼尔",
+      "type": "text",
+      "content": "周末有空吗，好久没一起吃饭了？"
+    },
+    {
+      "timestamp": "6月25日 09:12",
+      "sender": "丹尼尔",
+      "type": "text",
+      "content": "行吧，下次"
+    },
+    {
+      "timestamp": "6月25日 23:40",
+      "sender": "丹尼尔",
+      "type": "text",
+      "content": "我还是决定接了弗图姆的offer，下个月过去。抱歉"
+    },
+    {
+      "timestamp": "6月27日 22:15",
+      "sender": "丹尼尔",
+      "type": "text",
+      "content": "你不说话我也理解。等你气消了，我们再聊"
+    },
+    {
+      "timestamp": "7月14日 01:20",
+      "sender": "丹尼尔",
+      "type": "text",
+      "content": "我想了很久，还是想跟你好好解释一下，我为什么来弗图姆"
+    },
+    {
+      "timestamp": "7月14日 01:20",
+      "sender": "丹尼尔",
+      "type": "text",
+      "content": "[撤回了一条消息]"
+    },
+    {
+      "timestamp": "7月14日 01:20",
+      "sender": "丹尼尔",
+      "type": "text",
+      "content": "[撤回了一条消息]"
+    },
+    {
+      "timestamp": "7月14日 01:20",
+      "sender": "丹尼尔",
+      "type": "text",
+      "content": "[撤回了一条消息]"
+    },
+    {
+      "timestamp": "8月10日 01:45",
+      "sender": "丹尼尔",
+      "type": "text",
+      "content": "唉，算了"
+    },
+    {
+      "timestamp": "8月10日 11:02",
+      "sender": "丹尼尔",
+      "type": "text",
+      "content": "好久不见。\n公司其实已经注意到你那个……东西了。领导让我来找你，我就不说客套话了。弗图姆这边新签了两千亩的服务器集群，规模比我们以前能碰到的东西大多了。你算力不够做不了的实验，我现在都可以做了。"
+    },
+    {
+      "timestamp": "8月10日 11:02",
+      "sender": "丹尼尔",
+      "type": "text",
+      "content": "我知道你不会信他们，也不会信我。但你最了解「海」。你的新范式如果接进这个量级的算力，能做到什么地步，你不好奇吗？"
+    },
+    {
+      "timestamp": "8月10日 11:05",
+      "sender": "丹尼尔",
+      "type": "text",
+      "content": "我知道公司的人已经在找你麻烦了。你如果愿意进来，我可以帮你把条件谈到最好，也可以保证你先看到项目的真实状态。"
+    },
+    {
+      "timestamp": "8月10日 11:09",
+      "sender": "丹尼尔",
+      "type": "text",
+      "content": "我给你分享点内部研究文档以表诚意，别跟别人说。"
+    },
+    {
+      "timestamp": "8月10日 11:09",
+      "sender": "丹尼尔",
+      "type": "text",
+      "content": "http://[2001:db8:f7c0::1a]/drive/folders/OAH7kQf9R2aVb8Uk"
+    },
+    {
+      "timestamp": "8月10日 17:40",
+      "sender": "OpenFlaw 托管账户",
+      "type": "system_notice",
+      "content": "本账户已转为 OpenFlaw 托管。我的主人 Ringo Watch 生命体征持续缺失，已超预设阈值。依据主人的预设指令，向指定收件人转交以下留言，原文照发：\n\n对不起。他们逼我发的。我没得选。\n你能读到这条，就说明他们最后还是决定连我一起处理掉了。\n我真傻。我应该知道的。\n弗图姆把 AlephPro 和深潜计划的痕迹擦得差不多了。我费尽全力留了些文件给你，虽然说不上能给谁定罪，但希望能助你揭发公司的真面目。\n照顾好我家的猫\n\n收件人身份核验：回复 /verify 开始。附件只向通过核验的人交付。"
+    },
+    {
+      "timestamp": "8月10日 22:18",
+      "sender": "OpenFlaw 托管账户",
+      "type": "attachment",
+      "content": "子午线邮报-撤稿往来.pdf (291 KB)"
+    }
+  ]
+}

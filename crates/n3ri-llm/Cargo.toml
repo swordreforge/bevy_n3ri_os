@@ -1,0 +1,11 @@
+[package]
+name = "n3ri-llm"
+version = "0.1.0"
+edition = "2021"
+description = "n3ri_os LLM 基础设施:OpenAI 兼容 chat completion 客户端与配置持久化"
+
+[dependencies]
+reqwest = { workspace = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+dirs = "5"

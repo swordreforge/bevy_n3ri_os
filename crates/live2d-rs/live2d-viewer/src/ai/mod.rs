@@ -1,0 +1,11 @@
+pub mod character_card_panel;
+pub mod chat_panel;
+pub mod client;
+pub mod config;
+pub mod settings_panel;
+pub mod tools;
+pub mod tts;
+pub mod types;
+pub mod vision;
+#[cfg(feature = "capture")]
+pub mod vision_local;

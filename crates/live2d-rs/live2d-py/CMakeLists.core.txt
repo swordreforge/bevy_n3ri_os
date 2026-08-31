@@ -1,0 +1,14 @@
+cmake_minimum_required(VERSION 3.10)
+project(live2d-core-libs C CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# glad: OpenGL loader (single C source)
+add_subdirectory(Live2D/Glad)
+
+# V2: Live2D Cubism 2.x C++ port (static lib)
+add_subdirectory(Live2D/V2)
+
+# v2_c_api: C API wrapper for Rust FFI (static lib, links V2 + glad)
+add_subdirectory(v2_c_api)

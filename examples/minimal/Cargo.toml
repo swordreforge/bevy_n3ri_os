@@ -1,0 +1,36 @@
+[package]
+name = "n3ri-minimal"
+version = "0.1.0"
+edition = "2021"
+description = "Minimal example for n3ri_os"
+
+[[bin]]
+name = "n3ri-minimal"
+path = "src/main.rs"
+
+[dependencies]
+bevy = { workspace = true, features = [
+    "bevy_asset",
+    "bevy_audio",
+    "bevy_render",
+    "bevy_core_pipeline",
+    "bevy_sprite",
+    "bevy_text",
+    "bevy_ui",
+    "bevy_ui_render",
+    "bevy_winit",
+    "bevy_window",
+    "multi_threaded",
+    "default_font",
+    "png",
+    "vorbis",
+    "x11",
+    "wayland",
+] }
+n3ri-core = { path = "../../crates/n3ri-core" }
+n3ri-ui = { path = "../../crates/n3ri-ui" }
+n3ri-live2d = { path = "../../crates/n3ri-live2d" }
+bevy_embedded_assets = { version = "0.16", optional = true }
+
+[features]
+embed-assets = ["dep:bevy_embedded_assets", "n3ri-live2d/embed-model", "n3ri-ui/embed-content"]

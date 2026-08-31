@@ -1,0 +1,80 @@
+# Maintainer: swordreforge <swordreforge at github dot com>
+#
+# Local binary package — installs prebuilt live2d-viewer from the workspace.
+# Build the binary first:  cargo build --release -p live2d-viewer
+# Then build this package:  cd aur/live2d-viewer-bin && makepkg -si
+#
+# UPX NOTE: Tested UPX --best on this binary (24MB unstripped → 9.5MB).
+# LTO+strip already produces 8.2MB, beating UPX. UPX is skipped by default.
+# To force UPX: rebuild with CARGO_PROFILE_RELEASE_STRIP=none, then
+# uncomment the UPX block in package() and add 'upx' to makedepends.
+#
+# AUR MIGRATION: Replace the local paths with GitHub release URLs:
+#   source=("${pkgname}-${pkgver}::https://github.com/swordreforge/live2d-rs/releases/download/v${pkgver}/live2d-viewer-${pkgver}-x86_64"
+#           "icon-${pkgver}.png::https://raw.githubusercontent.com/swordreforge/live2d-rs/v${pkgver}/live2d-viewer/res/icon.png")
+# Then run `updpkgsums` to generate sha256sums, remove SKIP entries.
+
+pkgname=live2d-viewer-bin
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Desktop pet viewer for Live2D Cubism V3/V2 models, written in Rust"
+arch=('x86_64')
+url="https://github.com/swordreforge/live2d-rs"
+license=('MIT')
+depends=('gcc-libs' 'alsa-lib' 'libgl')
+# makedepends=('upx')  # uncomment to enable UPX compression
+provides=('live2d-viewer')
+conflicts=('live2d-viewer' 'live2d-viewer-git')
+
+# Resolve workspace root: PKGBUILD lives at <workspace>/aur/live2d-viewer-bin/
+_workspace_root="$(realpath "${startdir}/../..")"
+
+# Only the .desktop file is a true "source"; binary & icon come from the workspace
+source=("live2d-viewer.desktop")
+sha256sums=('SKIP')
+
+prepare() {
+  local _binary="${_workspace_root}/target/release/live2d-viewer"
+  local _icon="${_workspace_root}/live2d-viewer/res/icon.png"
+
+  if [[ ! -f "${_binary}" ]]; then
+    error "Binary not found: ${_binary}"
+    error "Build it first:  cd ${_workspace_root} && cargo build --release -p live2d-viewer"
+    return 1
+  fi
+
+  if [[ ! -f "${_icon}" ]]; then
+    error "Icon not found: ${_icon}"
+    return 1
+  fi
+
+  if ! file "${_binary}" | grep -q "ELF"; then
+    error "Not a valid ELF binary: ${_binary}"
+    return 1
+  fi
+}
+
+package() {
+  local _binary="${_workspace_root}/target/release/live2d-viewer"
+  local _icon="${_workspace_root}/live2d-viewer/res/icon.png"
+
+  # Install binary (LTO+strip already yields optimal 8.2MB)
+  install -Dm755 "${_binary}" "${pkgdir}/usr/bin/live2d-viewer"
+
+  # --- Optional UPX compression ---
+  # Rebuild first: CARGO_PROFILE_RELEASE_STRIP=none cargo build --release -p live2d-viewer
+  # Then uncomment:
+  # if upx -9 "${_binary}" -o "${pkgdir}/usr/bin/live2d-viewer" 2>/dev/null; then
+  #   msg "UPX compressed: $(stat -c%s "${pkgdir}/usr/bin/live2d-viewer") bytes"
+  # else
+  #   install -Dm755 "${_binary}" "${pkgdir}/usr/bin/live2d-viewer"
+  # fi
+
+  # Install icon (64x64 PNG → hicolor theme)
+  install -Dm644 "${_icon}" \
+    "${pkgdir}/usr/share/icons/hicolor/64x64/apps/live2d-viewer.png"
+
+  # Install .desktop file
+  install -Dm644 "${srcdir}/live2d-viewer.desktop" \
+    "${pkgdir}/usr/share/applications/live2d-viewer.desktop"
+}

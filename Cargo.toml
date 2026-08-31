@@ -1,0 +1,26 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/n3ri-core",
+    "crates/n3ri-llm",
+    "crates/n3ri-ui",
+    "crates/n3ri-live2d",
+    # "crates/n3ri-render",
+    # "crates/n3ri-audio",
+    # "crates/n3ri-apps",
+    "examples/minimal",
+]
+
+[workspace.dependencies]
+bevy = { version = "0.19", default-features = false, features = ["bevy_ui_render"] }
+bevy_tweening = "0.16"
+chrono = "0.4"
+# To avoid eprintln("ICU4X data error: No segmentation model for complex script: Chinese/Japanese")
+icu_provider = { version = "2", features = ["logging"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+
+# Release size/performance tuning
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = "symbols"

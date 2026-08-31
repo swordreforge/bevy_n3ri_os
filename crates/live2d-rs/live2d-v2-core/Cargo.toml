@@ -1,0 +1,8 @@
+[package]
+name = "live2d-v2-core"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+
+[dependencies]
+live2d-v2-core-sys = { path = "../live2d-v2-core-sys" }

@@ -1,0 +1,8 @@
+[package]
+name = "live2d-v2-core-sys"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+
+[build-dependencies]
+bindgen = "0.71"

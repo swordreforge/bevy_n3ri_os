@@ -1,0 +1,29 @@
+[package]
+name = "n3ri-ui"
+version = "0.1.0"
+edition = "2021"
+description = "UI components for n3ri_os"
+
+[dependencies]
+bevy = { workspace = true, features = [
+    "bevy_ui",
+    "bevy_ui_render",
+    "bevy_sprite",
+    "bevy_text",
+    "bevy_asset",
+    "default_font",
+    "png",
+    "jpeg",
+] }
+n3ri-core = { path = "../n3ri-core" }
+n3ri-llm = { path = "../n3ri-llm" }
+portable-pty = "0.8"
+bevy_woff = "0.2"
+arboard = { version = "3", default-features = false, features = ["wayland-data-control"] }
+chrono = { workspace = true }
+icu_provider = { workspace = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[features]
+embed-content = []

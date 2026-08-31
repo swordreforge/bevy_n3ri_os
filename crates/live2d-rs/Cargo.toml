@@ -1,0 +1,23 @@
+[workspace]
+resolver = "2"
+members = [
+    "live2d-core-sys",
+    "live2d-core",
+    "live2d-motion",
+    "live2d-v2-core-sys",
+    "live2d-v2-core",
+    "live2d-viewer",
+]
+
+[profile.release]
+# Keep symbols + line tables: panic locations and coredumpctl/gdb
+# post-mortem need them; strip=true makes production crashes undebuggable.
+strip = "debuginfo"
+debug = "line-tables-only"
+lto = true
+panic = "abort"
+codegen-units = 1
+opt-level = 3
+overflow-checks = false
+debug-assertions = false
+incremental = false

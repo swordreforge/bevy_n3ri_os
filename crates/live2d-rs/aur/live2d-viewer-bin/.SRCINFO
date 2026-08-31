@@ -1,0 +1,17 @@
+pkgbase = live2d-viewer-bin
+	pkgdesc = Desktop pet viewer for Live2D Cubism V3/V2 models, written in Rust
+	pkgver = 0.1.0
+	pkgrel = 1
+	url = https://github.com/swordreforge/live2d-rs
+	arch = x86_64
+	license = MIT
+	depends = gcc-libs
+	depends = alsa-lib
+	depends = libgl
+	provides = live2d-viewer
+	conflicts = live2d-viewer
+	conflicts = live2d-viewer-git
+	source = live2d-viewer.desktop
+	sha256sums = SKIP
+
+pkgname = live2d-viewer-bin

@@ -1,0 +1,15 @@
+pub mod browser;
+pub mod clicker;
+pub mod cakeduel;
+pub mod credits;
+pub mod files;
+pub mod image_viewer;
+pub mod international_chess;
+pub mod log_viewer;
+pub mod mail;
+pub mod pictionary;
+pub mod seek_treasure;
+pub mod settings;
+pub mod signal;
+pub mod terminal;
+pub mod txt_reader;

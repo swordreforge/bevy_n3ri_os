@@ -1,0 +1,30 @@
+[package]
+name = "n3ri-live2d"
+version = "0.1.0"
+edition = "2021"
+description = "Live2D desktop pet for n3ri_os (Cubism v3 via live2d-rs bindings)"
+
+[dependencies]
+bevy = { workspace = true, features = [
+    "bevy_asset",
+    "bevy_log",
+    "bevy_render",
+    "bevy_core_pipeline",
+    "bevy_sprite",
+    "bevy_sprite_render",
+    "bevy_text",
+    "bevy_window",
+    "png",
+] }
+live2d-core = { path = "../live2d-rs/live2d-core" }
+live2d-motion = { path = "../live2d-rs/live2d-motion" }
+bevy_tweening = { workspace = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[features]
+embed-model = []
+
+[[example]]
+name = "probe"
+path = "examples/probe.rs"

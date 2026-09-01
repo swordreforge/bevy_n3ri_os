@@ -4,6 +4,7 @@ use bevy_woff::WoffPlugin;
 pub mod apps;
 pub mod chat_capsule;
 pub mod content;
+pub mod cursor;
 pub mod desktop;
 pub mod dock;
 pub mod font;
@@ -12,6 +13,7 @@ pub mod resize;
 pub mod scroll;
 pub mod snap;
 pub mod topbar;
+pub mod wallpaper_bridge;
 pub mod window;
 
 pub use chat_capsule::ChatCapsuleState;
@@ -21,6 +23,7 @@ pub struct N3riUiPlugin;
 impl Plugin for N3riUiPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(WoffPlugin);
+        app.add_plugins(cursor::CursorPlugin);
         app.init_resource::<input_focus::TextInputOwner>();
         app.add_systems(PostUpdate, input_focus::sync_ime_window);
         

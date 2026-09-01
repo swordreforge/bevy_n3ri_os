@@ -36,7 +36,7 @@ struct PathText;
 struct SidebarItem(SidebarNav);
 
 #[derive(Component)]
-struct FileItem {
+pub(crate) struct FileItem {
     name: String,
     is_dir: bool,
 }
@@ -408,7 +408,8 @@ fn files_item_double_click(
                     || !item.name.contains('.'));
             if *interaction == Interaction::Pressed && is_viewable {
                 let time_since_last = current_time - *last_click;
-                if time_since_last < 0.3 {
+                // 500ms = Windows/GTK 平台默认双击间隔；触摸板 tap 送达普遍偏慢
+                if time_since_last < 0.5 {
                     let rel = format!(
                         "nori/app-icons/files/{}/{}",
                         state.current_path.trim_matches('/'),

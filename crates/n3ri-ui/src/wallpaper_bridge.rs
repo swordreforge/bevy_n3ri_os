@@ -74,13 +74,27 @@ fn focus_debug_probe(
     area: Res<UiArea>,
     pointer: Res<WallpaperPointerState>,
     mouse: Res<ButtonInput<MouseButton>>,
+    time: Res<Time>,
+    mut frame_acc: Local<(usize, f32)>,
     icons: Query<(Entity, &DockIcon, &Interaction, &ComputedNode, &UiGlobalTransform, &InheritedVisibility)>,
+    file_items: Query<(Entity, &Interaction), With<crate::apps::files::FileItem>>,
     roots: Query<(&ComputedNode, &UiGlobalTransform), With<crate::window::AppWindow>>,
     stack: Res<UiStack>,
     clipping_query: Query<(&ComputedNode, &UiGlobalTransform, &Node)>,
     child_of_query: Query<&ChildOf, Without<OverrideClip>>,
     all_interactions: Query<(Entity, &Interaction, &ComputedNode, &UiGlobalTransform), Changed<Interaction>>,
 ) {
+    frame_acc.0 += 1;
+    frame_acc.1 += time.delta_secs();
+    if frame_acc.0 >= 120 {
+        info!(
+            "[focus-debug] fps≈{:.1} (120 frames in {:.2}s)",
+            120.0 / frame_acc.1,
+            frame_acc.1
+        );
+        frame_acc.0 = 0;
+        frame_acc.1 = 0.0;
+    }
     if mouse.just_pressed(MouseButton::Left) {
         info!(
             "[focus-debug] just_pressed | cursor.logical={:?} physical={:?} active={} | area={:?} | pointer.last={:?} | uinodes={} partitions={}",
@@ -153,11 +167,15 @@ fn focus_debug_probe(
     }
     let pressed = icons.iter().filter(|(_, _, i, ..)| **i == Interaction::Pressed).count();
     let hovered = icons.iter().filter(|(_, _, i, ..)| **i == Interaction::Hovered).count();
-    if pressed > 0 || hovered > 0 || !all_interactions.is_empty() {
+    let f_pressed = file_items.iter().filter(|(_, i)| **i == Interaction::Pressed).count();
+    let f_hovered = file_items.iter().filter(|(_, i)| **i == Interaction::Hovered).count();
+    if pressed > 0 || hovered > 0 || f_pressed > 0 || f_hovered > 0 || !all_interactions.is_empty() {
         info!(
-            "[focus-debug] dock pressed={} hovered={} changed={}",
+            "[focus-debug] dock pressed={} hovered={} | file pressed={} hovered={} | changed={}",
             pressed,
             hovered,
+            f_pressed,
+            f_hovered,
             all_interactions.iter().count()
         );
     }
@@ -227,6 +245,8 @@ fn sync_cursor_from_wallpaper(
 fn inject_mouse_buttons(
     pointer: Res<WallpaperPointerState>,
     mut prev_pressed: Local<HashSet<bevy::input::mouse::MouseButton>>,
+    mut prev_sample_pressed: Local<HashSet<bevy::input::mouse::MouseButton>>,
+    time: Res<Time>,
     mut events: MessageWriter<MouseButtonInput>,
 ) {
     // 按钮状态仅在指针位于 surface 上时可信（Wayland 协议限制）
@@ -235,6 +255,16 @@ fn inject_mouse_buttons(
         .as_ref()
         .map(|s: &PointerSample| s.pressed.clone())
         .unwrap_or_default();
+
+    if std::env::var("N3RI_FOCUS_DEBUG").is_ok() && current != *prev_sample_pressed {
+        info!(
+            "[focus-debug] raw sample pressed {:?} -> {:?} @ {:.3}",
+            prev_sample_pressed,
+            current,
+            time.elapsed_secs()
+        );
+        *prev_sample_pressed = current.clone();
+    }
 
     if pointer.last.is_some() {
         for button in current.difference(&prev_pressed) {

@@ -1,5 +1,7 @@
 use bevy::audio::GlobalVolume;
 use bevy::prelude::*;
+use bevy::ui::IsDefaultUiCamera;
+use bevy_live_wallpaper::{LiveWallpaperCamera, LiveWallpaperPlugin};
 use n3ri_core::prelude::*;
 use n3ri_live2d::{
     HeadDisplay, Live2dPet,
@@ -8,9 +10,13 @@ use n3ri_live2d::{
 };
 use n3ri_ui::desktop::DesktopBackgroundMaterial;
 use n3ri_ui::font::N3riFonts;
+use n3ri_ui::wallpaper_bridge::{SatelliteDeltaChannel, WallpaperInputBridgePlugin};
 use n3ri_ui::window::AppWindow;
 use n3ri_ui::N3riUiPlugin;
 use n3ri_ui::chat_capsule::{ChatEmotionEvent, ChatRise};
+use std::io::{Read, Write};
+use x11rb::connection::Connection;
+use x11rb::protocol::xproto::ConnectionExt;
 
 mod focus;
 
@@ -22,6 +28,30 @@ const TRACK_COLOR: Color = Color::srgba(0.15, 0.2, 0.25, 0.5);
 struct BgmMusic;
 
 fn main() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|a| a == "-h" || a == "--help") {
+        print_help();
+        return;
+    }
+    if args.iter().any(|a| a == "--satellite") {
+        std::process::exit(run_satellite());
+    }
+    if args.iter().any(|a| a == "--wallpaper") {
+        run_wallpaper();
+    } else {
+        run_windowed();
+    }
+}
+
+fn print_help() {
+    println!("n3ri_os");
+    println!("  (无参数)      窗口模式（伪 OS 桌面主窗）");
+    println!("  --wallpaper   壁纸模式（layer-shell 桌面壁纸，全 UI 进壁纸层；无键盘/IME/滚轮）");
+    println!("  --satellite   全局指针卫星进程（XQueryPointer 轮询 → stdout 绝对坐标流；壁纸模式自动拉起）");
+    println!("  -h, --help    显示本帮助");
+}
+
+fn run_windowed() {
     let mut app = App::new();
 
     // ReplaceDefault 必须先于 AssetPlugin 注册（之后添加会 panic），资源路径调用点零改动
@@ -66,8 +96,179 @@ fn main() {
         .run();
 }
 
+fn run_wallpaper() {
+    let mut app = App::new();
+
+    #[cfg(feature = "embed-assets")]
+    app.add_plugins(bevy_embedded_assets::EmbeddedAssetPlugin {
+        mode: bevy_embedded_assets::PluginMode::ReplaceDefault,
+    });
+
+    app.add_plugins(
+        DefaultPlugins
+            .set(WindowPlugin {
+                primary_window: None,
+                exit_condition: bevy::window::ExitCondition::DontExit,
+                ..default()
+            })
+            .set(AssetPlugin {
+                file_path: "../../assets".into(),
+                ..default()
+            }),
+    )
+        .add_plugins(N3riCorePlugin::default())
+        .add_plugins(N3riUiPlugin)
+        .add_plugins(n3ri_live2d::N3riLive2dPlugin)
+        .add_plugins(focus::FocusPlugin)
+        .add_plugins(LiveWallpaperPlugin::default())
+        .add_plugins(WallpaperInputBridgePlugin)
+        .add_systems(Startup, (spawn_wallpaper_camera, spawn_satellite_process))
+        .add_systems(
+            Update,
+            (
+                chat_rise_sync,
+                chat_emotion_bridge,
+                track_satellite_child,
+            ),
+        )
+        .add_systems(OnEnter(OsState::Boot), spawn_boot_screen)
+        .add_systems(
+            Update,
+            update_boot_screen.run_if(in_state(OsState::Boot)),
+        )
+        .add_systems(OnEnter(OsState::Loading), spawn_loading_screen)
+        .add_systems(
+            Update,
+            update_loading_screen.run_if(in_state(OsState::Loading)),
+        )
+        .add_systems(OnEnter(OsState::Desktop), (spawn_desktop_screen, start_bgm))
+        .add_systems(Update, (toggle_head_display, update_bgm_volume))
+        .run();
+}
+
 fn spawn_camera(mut commands: Commands) {
     commands.spawn(Camera2d);
+}
+
+fn spawn_wallpaper_camera(mut commands: Commands) {
+    commands.spawn((Camera2d, LiveWallpaperCamera, IsDefaultUiCamera));
+}
+
+#[derive(Resource)]
+struct SatelliteChild(std::process::Child);
+
+fn spawn_satellite_process(mut commands: Commands) {
+    let Ok(exe) = std::env::current_exe() else {
+        warn!("无法定位自身可执行文件，卫星进程未启动");
+        return;
+    };
+    let result = std::process::Command::new(exe)
+        .arg("--satellite")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::inherit())
+        .spawn();
+    let mut child = match result {
+        Ok(child) => child,
+        Err(e) => {
+            warn!("卫星进程启动失败: {e}");
+            return;
+        }
+    };
+
+    let Some(stdout) = child.stdout.take() else {
+        commands.insert_resource(SatelliteChild(child));
+        return;
+    };
+    commands.insert_resource(SatelliteChild(child));
+
+    let (tx, rx) = std::sync::mpsc::channel::<n3ri_ui::wallpaper_bridge::SatelliteSample>();
+    std::thread::spawn(move || {
+        let mut reader = std::io::BufReader::new(stdout);
+        let mut line = String::new();
+        loop {
+            line.clear();
+            match std::io::BufRead::read_line(&mut reader, &mut line) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {
+                    let mut parts = line.split_whitespace();
+                    let sample = match (
+                        parts.next().and_then(|v| v.parse::<f32>().ok()),
+                        parts.next().and_then(|v| v.parse::<f32>().ok()),
+                    ) {
+                        (Some(x), Some(y)) => {
+                            Some(n3ri_ui::wallpaper_bridge::SatelliteSample::Pos(Vec2::new(x, y)))
+                        }
+                        _ => None,
+                    };
+                    if let Some(sample) = sample {
+                        let _ = tx.send(sample);
+                    }
+                }
+            }
+        }
+    });
+    commands.insert_resource(SatelliteDeltaChannel(std::sync::Mutex::new(rx)));
+}
+
+fn track_satellite_child(mut child: ResMut<SatelliteChild>, mut logged: Local<bool>) {
+    if *logged {
+        return;
+    }
+    match child.0.try_wait() {
+        Ok(Some(status)) => {
+            warn!("卫星进程已退出: {status}（全局指针外推不可用，视差将被冻结）");
+            *logged = true;
+        }
+        Ok(None) => {}
+        Err(e) => {
+            warn!("卫星进程状态查询失败: {e}");
+            *logged = true;
+        }
+    }
+}
+
+fn run_satellite() -> i32 {
+    // 父进程退出 → stdin EOF → 卫星自杀，避免孤儿进程
+    std::thread::spawn(|| {
+        let mut buf = String::new();
+        let _ = std::io::stdin().read_to_string(&mut buf);
+        std::process::exit(0);
+    });
+
+    let (conn, screen) = match x11rb::connect(None) {
+        Ok(conn) => conn,
+        Err(e) => {
+            eprintln!("卫星进程连接 Xwayland 失败: {e}");
+            return 1;
+        }
+    };
+    let root = conn.setup().roots[screen].root;
+
+    // 120Hz 轮询 XQueryPointer：读合成器最终光标（触摸板/鼠标通吃、绝对坐标零漂移、
+    // 指针被其他窗口遮挡时依然有效）；位置变化才发行，避免无谓的行流
+    let stdout = std::sync::Mutex::new(std::io::stdout());
+    let mut last: (i16, i16) = (i16::MIN, i16::MIN);
+    loop {
+        let Ok(cookie) = conn.query_pointer(root) else {
+            std::thread::sleep(std::time::Duration::from_millis(16));
+            continue;
+        };
+        let Ok(reply) = cookie.reply() else {
+            std::thread::sleep(std::time::Duration::from_millis(16));
+            continue;
+        };
+        let pos = (reply.root_x, reply.root_y);
+
+        if pos != last {
+            last = pos;
+            if let Ok(mut out) = stdout.lock() {
+                let _ = writeln!(out, "{} {}", pos.0, pos.1);
+                let _ = out.flush();
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(8));
+    }
 }
 
 // ── Phase 1: Boot ────────────────────────────────────────────────────

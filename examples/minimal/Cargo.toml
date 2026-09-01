@@ -30,6 +30,9 @@ bevy = { workspace = true, features = [
 n3ri-core = { path = "../../crates/n3ri-core" }
 n3ri-ui = { path = "../../crates/n3ri-ui" }
 n3ri-live2d = { path = "../../crates/n3ri-live2d" }
+# 壁纸模式：layer-shell 壁纸 surface + 全局指针卫星（XQueryPointer 轮询，触摸板/鼠标通吃）
+bevy_live_wallpaper = { version = "0.5", default-features = false, features = ["wayland"] }
+x11rb = "0.13"
 bevy_embedded_assets = { version = "0.16", optional = true }
 
 [features]

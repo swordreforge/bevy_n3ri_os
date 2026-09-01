@@ -13,9 +13,9 @@
 
 use bevy::ecs::relationship::Relationship;
 use bevy::prelude::*;
-use bevy::window::PrimaryWindow;
 
 use n3ri_live2d::PetDisplayNode;
+use n3ri_ui::cursor::UiArea;
 use n3ri_ui::desktop::{DesktopBackground, DesktopBackgroundMaterial};
 use n3ri_ui::dock::Dock;
 use n3ri_ui::window::{AppWindow, CinematicLocked, MaximizeButton, MinimizeButton};
@@ -202,7 +202,7 @@ fn focus_animate(
     mut bg_materials: ResMut<Assets<DesktopBackgroundMaterial>>,
     bg_nodes: Query<&MaterialNode<DesktopBackgroundMaterial>, With<DesktopBackground>>,
     dock_query: Query<Entity, With<Dock>>,
-    primary_window: Query<&Window, With<PrimaryWindow>>,
+    area: Res<UiArea>,
     mut commands: Commands,
 ) {
     let phase = state.phase;
@@ -254,11 +254,11 @@ fn focus_animate(
         return;
     }
 
-    let Ok(screen) = primary_window.single() else {
+    let screen_w = area.x;
+    let screen_h = area.y;
+    if screen_w <= 0.0 || screen_h <= 0.0 {
         return;
-    };
-    let screen_w = screen.resolution.width();
-    let screen_h = screen.resolution.height();
+    }
 
     // ── 窗口重排：进入 1/7 空隙 + 4/7 宽 + 顶栏下方铺满 ─────────────
     if let (Some(entity), Some(saved)) = (state.window, state.saved_window_node.clone()) {

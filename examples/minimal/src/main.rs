@@ -5,7 +5,7 @@ use bevy::window::PrimaryWindow;
 use bevy_live_wallpaper::{LiveWallpaperCamera, LiveWallpaperPlugin};
 use n3ri_core::prelude::*;
 use n3ri_live2d::{
-    HeadDisplay, Live2dPet, PetDisplayNode, PetTargetArea,
+    HeadDisplay, Live2dPet, PetDisplayNode, PetRenderConfig, PetTargetArea,
     spawn_head_display, spawn_pet_display, HeadDisplayWanted, PetDisplayImage,
     PetHeadImage,
 };
@@ -28,6 +28,30 @@ const TRACK_COLOR: Color = Color::srgba(0.15, 0.2, 0.25, 0.5);
 
 #[derive(Component)]
 struct BgmMusic;
+
+/// 画质档位 → 宠物 RTT 最长边上限（像素）。
+/// 极限性能 1280（38fps）/ 平衡 1920（33fps，默认）/ 省电 960（最低 GPU 负载）
+fn pet_rtt_cap(quality_idx: usize) -> u32 {
+    match quality_idx {
+        0 => 1280,
+        1 => 1920,
+        _ => 960,
+    }
+}
+
+/// 启动时按 UserSettings.quality_idx 初始化宠物渲染配置（启动前 N3riCorePlugin
+/// 已 load() 完 JSON；Startup 之后由 sync_pet_render_config 持续跟随设置页改动）
+fn init_pet_render_config(settings: Res<UserSettings>, mut config: ResMut<PetRenderConfig>) {
+    config.rtt_cap = pet_rtt_cap(settings.quality_idx);
+}
+
+/// 设置页改画质 → 实时写回渲染配置（refit_pet_view 防抖后自动缩小/放大 RTT）
+fn sync_pet_render_config(settings: Res<UserSettings>, mut config: ResMut<PetRenderConfig>) {
+    let cap = pet_rtt_cap(settings.quality_idx);
+    if config.rtt_cap != cap {
+        config.rtt_cap = cap;
+    }
+}
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -82,7 +106,9 @@ fn run_windowed() {
         .add_plugins(n3ri_live2d::N3riLive2dPlugin)
         .add_plugins(focus::FocusPlugin)
         .add_systems(Startup, spawn_camera)
+        .add_systems(Startup, init_pet_render_config)
         .add_systems(Update, (chat_rise_sync, chat_emotion_bridge))
+        .add_systems(Update, sync_pet_render_config)
         .add_systems(OnEnter(OsState::Boot), spawn_boot_screen)
         .add_systems(
             Update,
@@ -125,9 +151,8 @@ fn run_wallpaper() {
         .add_plugins(LiveWallpaperPlugin::default())
         .add_plugins(WallpaperInputBridgePlugin)
         // 无主窗口时 winit 判定"未聚焦"走 reactive_low_power，整应用掉到 ~8fps：
-        // 按键释放延迟一帧以上（双击间隔被拉到秒级、dock 不跟手）。
-        // Continuous 在无窗口下不会触发重绘（应用冻结），Reactive+wait 是唯一
-        // 既有节奏又持续 tick 的模式，15ms ≈ 66fps 上限。
+        // 按键释放延迟一帧以上。Continuous 在无窗口下不触发重绘（应用冻结），
+        // Reactive+wait 是唯一既有节奏又持续 tick 的模式，15ms ≈ 66fps 上限。
         .insert_resource(bevy::winit::WinitSettings {
             focused_mode: bevy::winit::UpdateMode::Reactive {
                 wait: std::time::Duration::from_millis(15),
@@ -141,8 +166,14 @@ fn run_wallpaper() {
                 react_to_user_events: true,
                 react_to_window_events: true,
             },
-        })
-        .add_systems(Startup, (spawn_wallpaper_camera, spawn_satellite_process))
+        });
+    // N3RI_PROF=1：启用逐系统 CPU 耗时诊断（性能归因用）
+    #[cfg(feature = "profiling")]
+    if std::env::var("N3RI_PROF").is_ok() {
+        app.add_plugins(bevy::diagnostic::SystemInformationDiagnosticsPlugin);
+    }
+    app.add_systems(Startup, (spawn_wallpaper_camera, spawn_satellite_process))
+        .add_systems(Startup, init_pet_render_config)
         .add_systems(
             Update,
             (
@@ -150,6 +181,7 @@ fn run_wallpaper() {
                 chat_emotion_bridge,
                 sync_pet_target_area,
                 track_satellite_child,
+                sync_pet_render_config,
             ),
         )
         .add_systems(OnEnter(OsState::Boot), spawn_boot_screen)

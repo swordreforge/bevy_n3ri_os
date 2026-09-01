@@ -37,3 +37,4 @@ bevy_embedded_assets = { version = "0.16", optional = true }
 
 [features]
 embed-assets = ["dep:bevy_embedded_assets", "n3ri-live2d/embed-model", "n3ri-ui/embed-content"]
+profiling = ["bevy/sysinfo_plugin"]

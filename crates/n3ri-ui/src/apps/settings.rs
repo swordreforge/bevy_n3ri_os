@@ -110,6 +110,8 @@ struct SettingsEntities {
     llm_status: Option<Entity>,
     bar_fill: [Option<Entity>; 3],
     bar_pct: [Option<Entity>; 3],
+    wallpaper_toggle_bg: Option<Entity>,
+    wallpaper_toggle_knob: Option<Entity>,
 }
 
 #[derive(Component)]
@@ -123,6 +125,9 @@ struct VolumeSlider(u8);
 
 #[derive(Component)]
 struct SettingsToggle(u8);
+
+#[derive(Component)]
+struct WallpaperToggle;
 
 #[derive(Component)]
 struct QualityButton;
@@ -166,6 +171,7 @@ impl Plugin for SettingsPlugin {
                 (
                     settings_nav,
                     settings_toggle_click,
+                    wallpaper_toggle_click,
                     settings_slider_drag,
                     settings_quality_click,
                     settings_ping_click,
@@ -499,6 +505,42 @@ fn spawn_toggle(parent: &mut ChildSpawnerCommands, ch: u8, on: bool) -> (Entity,
     (bg, knob_e)
 }
 
+fn spawn_wallpaper_toggle(parent: &mut ChildSpawnerCommands, on: bool) -> (Entity, Entity) {
+    let bg = parent
+        .spawn((
+            Button,
+            WallpaperToggle,
+            Node {
+                width: Val::Px(40.0),
+                height: Val::Px(20.0),
+                border_radius: BorderRadius::all(Val::Px(10.0)),
+                ..default()
+            },
+            BackgroundColor(if on { ACCENT } else { TOGGLE_OFF }),
+        ))
+        .id();
+
+    let mut knob_e = Entity::PLACEHOLDER;
+    parent.commands().entity(bg).with_children(|t| {
+        knob_e = t
+            .spawn((
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: Val::Px(if on { 22.0 } else { 2.0 }),
+                    top: Val::Px(2.0),
+                    width: Val::Px(16.0),
+                    height: Val::Px(16.0),
+                    border_radius: BorderRadius::all(Val::Px(8.0)),
+                    ..default()
+                },
+                BackgroundColor(Color::WHITE),
+            ))
+            .id();
+    });
+
+    (bg, knob_e)
+}
+
 fn spawn_display_page(
     parent: &mut ChildSpawnerCommands,
     fonts: &N3riFonts,
@@ -559,6 +601,36 @@ fn spawn_display_page(
                 },
                 TextColor(TEXT_DIM),
             ));
+        });
+
+        page.spawn(Node {
+            width: Val::Px(280.0),
+            height: Val::Px(44.0),
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::SpaceBetween,
+            padding: UiRect::all(Val::Px(12.0)),
+            border_radius: BorderRadius::all(Val::Px(8.0)),
+            border: UiRect::all(Val::Px(1.0)),
+            ..default()
+        })
+        .with_children(|row| {
+            row.spawn((
+                Text::new("壁纸模式"),
+                TextFont {
+                    font: FontSource::Handle(fonts.default.clone()),
+                    font_size: FontSize::Px(14.0),
+                    ..default()
+                },
+                TextColor(TEXT_MAIN),
+            ));
+            row.spawn(Node {
+                width: Val::Px(60.0),
+                height: Val::Px(1.0),
+                ..default()
+            });
+            let (bg, knob) = spawn_wallpaper_toggle(row, settings.wallpaper_enabled);
+            ents.wallpaper_toggle_bg = Some(bg);
+            ents.wallpaper_toggle_knob = Some(knob);
         });
     });
 
@@ -902,6 +974,37 @@ fn settings_toggle_click(
     }
 }
 
+/// 壁纸模式开关：翻转后保存，并自我重启进入目标模式（新进程先起，旧进程随即退出）。
+fn wallpaper_toggle_click(
+    mouse: Res<ButtonInput<MouseButton>>,
+    toggle_query: Query<&Interaction, With<WallpaperToggle>>,
+    mut settings: ResMut<UserSettings>,
+    mut exit: MessageWriter<AppExit>,
+) {
+    if !mouse.just_pressed(MouseButton::Left) {
+        return;
+    }
+    for interaction in toggle_query.iter() {
+        if *interaction == Interaction::Pressed {
+            settings.wallpaper_enabled = !settings.wallpaper_enabled;
+            settings.save();
+            relaunch_into_mode(settings.wallpaper_enabled);
+            exit.write(AppExit::Success);
+        }
+    }
+}
+
+fn relaunch_into_mode(wallpaper: bool) {
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    let mut command = std::process::Command::new(exe);
+    if wallpaper {
+        command.arg("--wallpaper");
+    }
+    let _ = command.spawn();
+}
+
 fn settings_quality_click(
     mouse: Res<ButtonInput<MouseButton>>,
     quality_query: Query<&Interaction, With<QualityButton>>,
@@ -1104,6 +1207,20 @@ fn settings_sync_ui(
             if **text != target {
                 **text = target;
             }
+        }
+    }
+
+    if let Some(bg_e) = ents.wallpaper_toggle_bg {
+        if let Ok((_, mut bg)) = node_bg_query.get_mut(bg_e) {
+            let target = if settings.wallpaper_enabled { ACCENT } else { TOGGLE_OFF };
+            if bg.0 != target {
+                bg.0 = target;
+            }
+        }
+    }
+    if let Some(knob_e) = ents.wallpaper_toggle_knob {
+        if let Ok((mut node, _)) = node_bg_query.get_mut(knob_e) {
+            set_px_left(&mut node, if settings.wallpaper_enabled { 22.0 } else { 2.0 });
         }
     }
 

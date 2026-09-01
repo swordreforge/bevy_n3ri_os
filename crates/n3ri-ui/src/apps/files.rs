@@ -76,7 +76,7 @@ pub struct FilesPlugin;
 impl Plugin for FilesPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<FilesState>()
-            .add_systems(Update, (files_sidebar_click, files_back_click, files_item_click, files_item_double_click, files_sync_ui));
+            .add_systems(Update, (files_sidebar_click, files_back_click, files_item_click, files_sync_ui));
     }
 }
 
@@ -367,119 +367,106 @@ fn files_item_click(
     mouse: Res<ButtonInput<MouseButton>>,
     mut state: ResMut<FilesState>,
     query: Query<(&Interaction, &FileItem), With<Button>>,
-) {
-    if !mouse.just_pressed(MouseButton::Left) {
-        return;
-    }
-    for (interaction, item) in query.iter() {
-        if *interaction == Interaction::Pressed && item.is_dir {
-            let current = state.current_path.clone();
-            let new_path = format!("{}/{}", current, item.name);
-            state.history.push(current);
-            state.current_path = new_path;
-        }
-    }
-}
-
-fn files_item_double_click(
-    mouse: Res<ButtonInput<MouseButton>>,
-    time: Res<Time>,
-    mut last_click: Local<f32>,
-    state: Res<FilesState>,
-    query: Query<(&Interaction, &FileItem), With<Button>>,
     mut commands: Commands,
     fonts: Res<N3riFonts>,
     asset_server: Res<AssetServer>,
     mut terminal: ResMut<crate::apps::terminal::TerminalState>,
     dock_parent_q: Query<&bevy::prelude::ChildOf, With<crate::dock::Dock>>,
 ) {
-    let current_time = time.elapsed_secs();
+    if !mouse.just_pressed(MouseButton::Left) {
+        return;
+    }
+    for (interaction, item) in query.iter() {
+        if *interaction != Interaction::Pressed {
+            continue;
+        }
 
-    if mouse.just_pressed(MouseButton::Left) {
-        for (interaction, item) in query.iter() {
-            let is_viewable = !item.is_dir
-                && (item.name.ends_with(".txt")
-                    || item.name.ends_with(".log")
-                    || item.name.ends_with(".yaml")
-                    || item.name.ends_with(".jpg")
-                    || item.name.ends_with(".jpeg")
-                    || item.name.ends_with(".png")
-                    || item.name.ends_with(".pdf")
-                    || !item.name.contains('.'));
-            if *interaction == Interaction::Pressed && is_viewable {
-                let time_since_last = current_time - *last_click;
-                // 500ms = Windows/GTK 平台默认双击间隔；触摸板 tap 送达普遍偏慢
-                if time_since_last < 0.5 {
-                    let rel = format!(
-                        "nori/app-icons/files/{}/{}",
-                        state.current_path.trim_matches('/'),
-                        item.name
-                    );
-                    let fonts_data = N3riFonts {
-                        default: fonts.default.clone(),
-                        terminal: fonts.terminal.clone(),
-                        ui: fonts.ui.clone(),
-                        dock: fonts.dock.clone(),
-                    };
-                    if item.name.ends_with(".log") {
-                        crate::apps::log_viewer::spawn_log_viewer_direct(&mut commands, &rel, &fonts_data, &asset_server);
-                    } else if item.name.ends_with(".pdf") {
-                        let png_rel = format!("{rel}.png");
-                        if crate::content::exists(&png_rel) {
-                            crate::apps::image_viewer::spawn_image_viewer_direct(&mut commands, &png_rel, &fonts_data, &asset_server);
-                        } else {
-                            let tip = std::env::temp_dir().join("n3ri_pdf_preview_missing.txt");
-                            fs::write(&tip, "无法预览:此文档已损坏,或缺少预览数据。\n\n……这一份似乎和其余的报告不太一样。建议不要继续查阅。").ok();
-                            if let Some(tip_str) = tip.to_str() {
-                                crate::apps::txt_reader::spawn_txt_reader_direct(&mut commands, &tip_str.to_string(), &fonts_data);
-                            }
-                        }
-                    } else if !item.name.contains('.') {
-                        // 模拟可执行文件：内容层取字节解压到临时目录执行
-                        // （嵌入发布下磁盘无此文件；CWD 无关，target/release 启动也能跑）
-                        let exec_rel = format!(
-                            "nori/app-icons/files/{}/{}",
-                            state.current_path.trim_matches('/'),
-                            item.name
+        if item.is_dir {
+            let current = state.current_path.clone();
+            let new_path = format!("{}/{}", current, item.name);
+            state.history.push(current);
+            state.current_path = new_path;
+            continue;
+        }
+
+        let is_viewable = item.name.ends_with(".txt")
+            || item.name.ends_with(".log")
+            || item.name.ends_with(".yaml")
+            || item.name.ends_with(".jpg")
+            || item.name.ends_with(".jpeg")
+            || item.name.ends_with(".png")
+            || item.name.ends_with(".pdf")
+            || !item.name.contains('.');
+        if !is_viewable {
+            continue;
+        }
+
+        let rel = format!(
+            "nori/app-icons/files/{}/{}",
+            state.current_path.trim_matches('/'),
+            item.name
+        );
+        let fonts_data = N3riFonts {
+            default: fonts.default.clone(),
+            terminal: fonts.terminal.clone(),
+            ui: fonts.ui.clone(),
+            dock: fonts.dock.clone(),
+        };
+        if item.name.ends_with(".log") {
+            crate::apps::log_viewer::spawn_log_viewer_direct(&mut commands, &rel, &fonts_data, &asset_server);
+        } else if item.name.ends_with(".pdf") {
+            let png_rel = format!("{rel}.png");
+            if crate::content::exists(&png_rel) {
+                crate::apps::image_viewer::spawn_image_viewer_direct(&mut commands, &png_rel, &fonts_data, &asset_server);
+            } else {
+                let tip = std::env::temp_dir().join("n3ri_pdf_preview_missing.txt");
+                fs::write(&tip, "无法预览:此文档已损坏,或缺少预览数据。\n\n……这一份似乎和其余的报告不太一样。建议不要继续查阅。").ok();
+                if let Some(tip_str) = tip.to_str() {
+                    crate::apps::txt_reader::spawn_txt_reader_direct(&mut commands, &tip_str.to_string(), &fonts_data);
+                }
+            }
+        } else if !item.name.contains('.') {
+            // 模拟可执行文件：内容层取字节解压到临时目录执行
+            // （嵌入发布下磁盘无此文件；CWD 无关，target/release 启动也能跑）
+            let exec_rel = format!(
+                "nori/app-icons/files/{}/{}",
+                state.current_path.trim_matches('/'),
+                item.name
+            );
+            let tmp_dir = std::env::temp_dir().join("n3ri_files_exec");
+            let run = if let Some(bytes) = crate::content::read_bytes(&exec_rel) {
+                let _ = std::fs::create_dir_all(&tmp_dir);
+                let tmp_file = tmp_dir.join(&item.name);
+                if std::fs::write(&tmp_file, &bytes).is_ok() {
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        let _ = std::fs::set_permissions(
+                            &tmp_file,
+                            std::fs::Permissions::from_mode(0o755),
                         );
-                        let tmp_dir = std::env::temp_dir().join("n3ri_files_exec");
-                        let run = if let Some(bytes) = crate::content::read_bytes(&exec_rel) {
-                            let _ = std::fs::create_dir_all(&tmp_dir);
-                            let tmp_file = tmp_dir.join(&item.name);
-                            if std::fs::write(&tmp_file, &bytes).is_ok() {
-                                #[cfg(unix)]
-                                {
-                                    use std::os::unix::fs::PermissionsExt;
-                                    let _ = std::fs::set_permissions(
-                                        &tmp_file,
-                                        std::fs::Permissions::from_mode(0o755),
-                                    );
-                                }
-                            }
-                            format!("cd '{}' && './{}'", tmp_dir.to_string_lossy(), item.name)
-                        } else {
-                            // 磁盘兜底（内容层读不到时按原 CWD 逻辑走，shell 报错可见）
-                            let dir_abs = std::env::current_dir()
-                                .unwrap_or_default()
-                                .join("assets/nori/app-icons/files")
-                                .join(&state.current_path);
-                            format!("cd '{}' && './{}'", dir_abs.to_string_lossy(), item.name)
-                        };
-                        terminal.request_run(&run);
-                        if let Ok(dock_parent) = dock_parent_q.single() {
-                            let root_e = dock_parent.0;
-                            commands.entity(root_e).with_children(|p| {
-                                crate::apps::terminal::spawn_terminal(p, &fonts_data);
-                            });
-                        }
-                    } else if item.name.ends_with(".jpg") || item.name.ends_with(".jpeg") || item.name.ends_with(".png") {
-                        crate::apps::image_viewer::spawn_image_viewer_direct(&mut commands, &rel, &fonts_data, &asset_server);
-                    } else {
-                        crate::apps::txt_reader::spawn_txt_reader_direct(&mut commands, &rel, &fonts_data);
                     }
                 }
-                *last_click = current_time;
+                format!("cd '{}' && './{}'", tmp_dir.to_string_lossy(), item.name)
+            } else {
+                // 磁盘兜底（内容层读不到时按原 CWD 逻辑走，shell 报错可见）
+                let dir_abs = std::env::current_dir()
+                    .unwrap_or_default()
+                    .join("assets/nori/app-icons/files")
+                    .join(&state.current_path);
+                format!("cd '{}' && './{}'", dir_abs.to_string_lossy(), item.name)
+            };
+            terminal.request_run(&run);
+            if let Ok(dock_parent) = dock_parent_q.single() {
+                let root_e = dock_parent.0;
+                commands.entity(root_e).with_children(|p| {
+                    crate::apps::terminal::spawn_terminal(p, &fonts_data);
+                });
             }
+        } else if item.name.ends_with(".jpg") || item.name.ends_with(".jpeg") || item.name.ends_with(".png") {
+            crate::apps::image_viewer::spawn_image_viewer_direct(&mut commands, &rel, &fonts_data, &asset_server);
+        } else {
+            crate::apps::txt_reader::spawn_txt_reader_direct(&mut commands, &rel, &fonts_data);
         }
     }
 }

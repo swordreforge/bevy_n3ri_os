@@ -19,7 +19,7 @@ use bevy::ecs::query::QueryData;
 use bevy::input::mouse::MouseButtonInput;
 use bevy::input::ButtonState;
 use bevy::prelude::*;
-use bevy::ui::{clip_check_recursive, ui_focus_system};
+use bevy::ui::clip_check_recursive;
 use bevy::ui::{
     ComputedNode, FocusPolicy, Interaction, Node, OverrideClip, RelativeCursorPosition,
     UiGlobalTransform, UiStack,
@@ -27,6 +27,7 @@ use bevy::ui::{
 use bevy_live_wallpaper::{PointerSample, WallpaperPointerState, WallpaperSurfaceInfo};
 
 use crate::cursor::{CursorPosition, UiArea};
+use crate::dock::DockIcon;
 
 /// 卫星进程上行样本：指针绝对位置（XQueryPointer，X 屏物理坐标）/ X 屏物理尺寸（开机首行）。
 pub enum SatelliteSample {
@@ -56,7 +57,109 @@ impl Plugin for WallpaperInputBridgePlugin {
             .init_resource::<SatelliteScreen>()
             .add_systems(First, (drain_satellite, sync_cursor_from_wallpaper).chain())
             .add_systems(First, inject_mouse_buttons)
-            .add_systems(Update, wallpaper_ui_focus_system.after(ui_focus_system));
+            .add_systems(
+                PreUpdate,
+                wallpaper_ui_focus_system.after(bevy::ui::UiSystems::Focus),
+            );
+        if std::env::var("N3RI_FOCUS_DEBUG").is_ok() {
+            app.add_systems(Update, focus_debug_probe);
+        }
+    }
+}
+
+/// 诊断探针（N3RI_FOCUS_DEBUG=1 启用）：点击瞬间输出光标/注入/hover/pressed 状态，
+/// 并对 dock 图标手动做几何命中测试，用于定位壁纸模式命中失灵。
+fn focus_debug_probe(
+    cursor: Res<CursorPosition>,
+    area: Res<UiArea>,
+    pointer: Res<WallpaperPointerState>,
+    mouse: Res<ButtonInput<MouseButton>>,
+    icons: Query<(Entity, &DockIcon, &Interaction, &ComputedNode, &UiGlobalTransform, &InheritedVisibility)>,
+    roots: Query<(&ComputedNode, &UiGlobalTransform), With<crate::window::AppWindow>>,
+    stack: Res<UiStack>,
+    clipping_query: Query<(&ComputedNode, &UiGlobalTransform, &Node)>,
+    child_of_query: Query<&ChildOf, Without<OverrideClip>>,
+    all_interactions: Query<(Entity, &Interaction, &ComputedNode, &UiGlobalTransform), Changed<Interaction>>,
+) {
+    if mouse.just_pressed(MouseButton::Left) {
+        info!(
+            "[focus-debug] just_pressed | cursor.logical={:?} physical={:?} active={} | area={:?} | pointer.last={:?} | uinodes={} partitions={}",
+            cursor.logical,
+            cursor.physical,
+            cursor.active,
+            area.0,
+            pointer.last.as_ref().map(|s| (s.position, s.pressed.len())),
+            stack.uinodes.len(),
+            stack.partition.len(),
+        );
+        for (icon_ent, _, _, node, tf, vis) in icons.iter() {
+            let (scale, _, center) = tf.to_scale_angle_translation();
+            let size = node.size();
+            let rect_min = center - size * 0.5;
+            let inside =
+                cursor.physical.x >= rect_min.x && cursor.physical.x <= rect_min.x + size.x
+                    && cursor.physical.y >= rect_min.y && cursor.physical.y <= rect_min.y + size.y;
+            if !inside {
+                continue;
+            }
+            let contains = node.contains_point(*tf, cursor.physical);
+            let clipped = bevy::ui::clip_check_recursive(
+                cursor.physical,
+                icon_ent,
+                &clipping_query,
+                &child_of_query,
+            );
+            let mut chain = Vec::new();
+            let mut cur = icon_ent;
+            for _ in 0..8 {
+                let Ok(child_of) = child_of_query.get(cur) else { break };
+                cur = child_of.0;
+                match clipping_query.get(cur) {
+                    Ok((anc_node, anc_tf, style)) => {
+                        let (_, _, anc_center) = anc_tf.to_scale_angle_translation();
+                        chain.push(format!(
+                            "{:?} vis_ovf={} c={:?} s={:?}",
+                            cur,
+                            style.overflow.is_visible(),
+                            anc_center,
+                            anc_node.size()
+                        ));
+                    }
+                    Err(_) => break,
+                }
+            }
+            info!(
+                "[focus-debug] icon vis={} scale={:.3} size={:?} center={:?} cursor={:?} contains_point={} clip_ok={} | {}",
+                vis.get(), scale, size, center, cursor.physical, contains, clipped,
+                chain.join(" -> ")
+            );
+        }
+        for (entity, interaction, node, tf) in all_interactions.iter() {
+            let (_, _, center) = tf.to_scale_angle_translation();
+            info!(
+                "[focus-debug] changed: entity={:?} {:?} center={:?} size={:?}",
+                entity, interaction, center, node.size()
+            );
+        }
+        for (node, tf) in roots.iter() {
+            let (_, _, center) = tf.to_scale_angle_translation();
+            info!(
+                "[focus-debug] root size={:?} center={:?} scale_inv={:.4}",
+                node.size(),
+                center,
+                node.inverse_scale_factor()
+            );
+        }
+    }
+    let pressed = icons.iter().filter(|(_, _, i, ..)| **i == Interaction::Pressed).count();
+    let hovered = icons.iter().filter(|(_, _, i, ..)| **i == Interaction::Hovered).count();
+    if pressed > 0 || hovered > 0 || !all_interactions.is_empty() {
+        info!(
+            "[focus-debug] dock pressed={} hovered={} changed={}",
+            pressed,
+            hovered,
+            all_interactions.iter().count()
+        );
     }
 }
 
@@ -164,9 +267,13 @@ struct FocusNodeQuery {
     inherited_visibility: Option<&'static InheritedVisibility>,
 }
 
-/// [`ui_focus_system`] 的壁纸模式复刻：光标来自 [`CursorPosition`] 而非窗口查询。
+/// bevy `ui_focus_system` 的壁纸模式复刻：光标来自 [`CursorPosition`] 而非窗口查询。
 /// 与原版逐段对齐（复位、按下/悬停判定、FocusPolicy 捕获、裁剪递归），仅相机
 /// 光标映射替换为全局资源（壁纸应用单相机，光标对全部 UI 节点生效）。
+/// 原版同在 PreUpdate（UiSystems::Focus）但拿不到 Image 相机光标，其
+/// `normalized.is_none()` 复位分支会把包括 Pressed 在内的全部交互抹成 None，
+/// 因此本驱动必须排在该 set 之后：原版清场 → 本驱动赋值 → Update 消费系统
+/// 读到的恒为本帧有效状态，无调度竞速。
 fn wallpaper_ui_focus_system(
     mut hovered_nodes: Local<Vec<Entity>>,
     mut entities_to_reset: Local<Vec<Entity>>,

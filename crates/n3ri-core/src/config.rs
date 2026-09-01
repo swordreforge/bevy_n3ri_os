@@ -37,6 +37,9 @@ pub struct UserSettings {
     pub volumes: [u8; 4],
     pub toggles: [bool; 4],
     pub quality_idx: usize,
+    /// 壁纸模式开关（设置 → 显示效果）；切换时主程序自我重启进入另一模式
+    #[serde(default)]
+    pub wallpaper_enabled: bool,
 }
 
 impl Default for UserSettings {
@@ -45,6 +48,7 @@ impl Default for UserSettings {
             volumes: [80, 71, 80, 100],
             toggles: [true, true, true, true],
             quality_idx: 0,
+            wallpaper_enabled: false,
         }
     }
 }

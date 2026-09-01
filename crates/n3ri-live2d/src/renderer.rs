@@ -46,11 +46,45 @@ const FIT_MARGIN_X: f32 = 0.92;
 const FIT_MARGIN_Y: f32 = 0.94;
 const OPACITY_EPSILON: f32 = 0.001;
 pub const DISPLAY_SCALE: f32 = 0.5;
+/// 显示节点占逻辑区域的比例（= 旧 DISPLAY_SCALE × 窗口模式 scale 1.5，两模式一致；
+/// pet 屏占 = RTT 拟合比 × 节点缩放比，与窗口尺寸无关，故 RTT 固定后节点可零成本跟随）
+pub const PET_DISPLAY_RATIO: f32 = 0.75;
+/// RTT 扩容防抖：目标持续大于当前分辨率该秒数后才扩容（拖拽放大过程不逐帧重建）
+const GROW_DEBOUNCE_SECS: f32 = 0.5;
 
 #[derive(Resource, Clone, Copy)]
 pub struct PetViewSize {
     pub w: u32,
     pub h: u32,
+}
+
+/// 期望的宠物视口（由二进制侧从统一 UiArea 喂入；RTT 用 logical×scale 物理分辨率，
+/// 显示节点用 logical×PET_DISPLAY_RATIO 逻辑尺寸，保证两种模式下宠物占屏比例一致）。
+/// `refit_pet_view` 据此运行时重适配全部 RTT/相机/映射/材质/显示节点，
+/// 替代旧的"加载时从主窗抓一次尺寸"快照（壁纸模式无主窗、niri 半宽开窗都会定格错误尺寸）。
+#[derive(Resource, Debug, Clone, Copy, PartialEq)]
+pub struct PetTargetArea {
+    pub logical: Vec2,
+    pub scale: f32,
+}
+
+impl Default for PetTargetArea {
+    fn default() -> Self {
+        Self {
+            logical: Vec2::ZERO,
+            scale: 1.0,
+        }
+    }
+}
+
+/// refit 所需的全部句柄与常量（setup 时一次性收集）。
+#[derive(Resource)]
+pub struct PetRefitRig {
+    pub pet_image: Handle<Image>,
+    pub pet_camera: Entity,
+    pub head_camera: Entity,
+    /// 模型绑定姿态顶点 bbox（min_x, min_y, max_x, max_y）
+    pub bbox: [f32; 4],
 }
 
 // ── material ──
@@ -241,7 +275,7 @@ struct MaskGroup {
 }
 
 #[derive(Resource)]
-struct Live2dRenderRig {
+pub(crate) struct Live2dRenderRig {
     slots: Vec<Slot>,
     _mask_groups: Vec<MaskGroup>,
 }
@@ -274,6 +308,8 @@ pub fn load_and_setup_pet(world: &mut World) {
 
     let count = pet.drawable_count();
     info!("live2d pet loaded ({count} drawables)");
+
+    let bbox = pet.vertex_bbox();
 
     let view_w;
     let view_h;
@@ -317,7 +353,7 @@ pub fn load_and_setup_pet(world: &mut World) {
         .map(|rel| asset_server.load(format!("{pet_rel}/{rel}")))
         .collect();
 
-    world.spawn((
+    let pet_camera = world.spawn((
         Camera2d,
         Camera {
             order: -10,
@@ -328,7 +364,7 @@ pub fn load_and_setup_pet(world: &mut World) {
         Msaa::Sample4,
         RenderLayers::layer(DRAW_LAYER),
         Transform::from_xyz(view_w as f32 * 0.5, view_h as f32 * 0.5, 1000.0),
-    ));
+    )).id();
 
     // Head RTT — smaller target for the head-only camera.
     let head_size = 256u32;
@@ -362,8 +398,9 @@ pub fn load_and_setup_pet(world: &mut World) {
     )).id();
     if let Some(mut proj) = world.get_mut::<Projection>(head_camera) {
         if let Projection::Orthographic(ref mut ortho) = *proj {
+            // 正方形取景：head RTT 是 256×256 正方形（见 refit_pet_view 同款注释）
             ortho.scaling_mode = ScalingMode::Fixed {
-                width: view_w as f32,
+                width: view_h as f32,
                 height: view_h as f32,
             };
             ortho.scale = 0.38;
@@ -571,12 +608,106 @@ pub fn load_and_setup_pet(world: &mut World) {
         _mask_groups: mask_groups,
     });
     world.insert_resource(PetViewSize { w: view_w, h: view_h });
+    world.insert_resource(PetRefitRig {
+        pet_image: pet_image_h.clone(),
+        pet_camera,
+        head_camera,
+        bbox,
+    });
     world.insert_resource(mapping);
     world.insert_resource(PetDisplayImage(Some(pet_image_h)));
     world.insert_non_send(pet);
 }
 
 // ── per-frame systems ──
+
+/// 运行时重适配：目标区域变化时同步 RTT 尺寸、相机、PetMapping、材质 viewport、
+/// 显示节点。窗口模式（niri 扩窗）与壁纸模式（surface 配置就绪）都由此收敛到真实区域。
+/// RTT 扩容（只增不减 + 防抖）：目标持续大于当前分辨率 0.5s 才执行整套重建
+/// （图像/相机/映射/材质一次到位）。缩窗与同尺寸变化零开销；
+/// 显示节点由二进制侧按逻辑区域连续跟随（零成本，见 examples/minimal sync_pet_display_node）。
+pub(crate) fn refit_pet_view(
+    target: Res<PetTargetArea>,
+    mut view: ResMut<PetViewSize>,
+    rig: Option<Res<PetRefitRig>>,
+    render_rig: Option<Res<Live2dRenderRig>>,
+    mut mapping: ResMut<PetMapping>,
+    mut images: ResMut<Assets<Image>>,
+    mut materials: ResMut<Assets<Live2dDrawableMaterial>>,
+    mut cameras: Query<(&mut Transform, &mut Projection)>,
+    time: Res<Time>,
+    mut grow_timer: Local<f32>,
+) {
+    let Some(rig) = rig else {
+        return;
+    };
+    if target.logical.x <= 1.0 || target.logical.y <= 1.0 {
+        return;
+    }
+    let scale = target.scale.max(1.0);
+    let (w, h) = (
+        (target.logical.x * scale).max(1.0) as u32,
+        (target.logical.y * scale).max(1.0) as u32,
+    );
+    if w <= view.w && h <= view.h {
+        *grow_timer = 0.0;
+        return;
+    }
+
+    *grow_timer += time.delta_secs();
+    if *grow_timer < GROW_DEBOUNCE_SECS {
+        return;
+    }
+    *grow_timer = 0.0;
+
+    if let Some(mut img) = images.get_mut(&rig.pet_image) {
+        img.resize(Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        });
+    }
+    *mapping = PetMapping::compute(rig.bbox, w, h);
+
+    if let Ok((mut tf, _)) = cameras.get_mut(rig.pet_camera) {
+        tf.translation = Vec3::new(w as f32 * 0.5, h as f32 * 0.5, 1000.0);
+    }
+    if let Ok((mut tf, mut proj)) = cameras.get_mut(rig.head_camera) {
+        tf.translation = Vec3::new(w as f32 * 0.5, h as f32 * 0.73, 1000.0);
+        if let Projection::Orthographic(ref mut ortho) = *proj {
+            // 正方形取景（边长 = RTT 高 × 既有缩放）：head RTT 是 256×256 正方形，
+            // 视口比例跟随窗口宽高比会把头压扁
+            ortho.scaling_mode = ScalingMode::Fixed {
+                width: h as f32,
+                height: h as f32,
+            };
+        }
+    }
+
+    if let Some(render_rig) = render_rig.as_ref() {
+        for group in &render_rig._mask_groups {
+            if let Some(mut img) = images.get_mut(&group._rtt_handle) {
+                img.resize(Extent3d {
+                    width: w,
+                    height: h,
+                    depth_or_array_layers: 1,
+                });
+            }
+            if let Ok((mut tf, _)) = cameras.get_mut(group._camera_entity) {
+                tf.translation = Vec3::new(w as f32 * 0.5, h as f32 * 0.5, 1000.0);
+            }
+        }
+        for (_, _, _, mat_h) in &render_rig.slots {
+            if let Some(mut mat) = materials.get_mut(mat_h) {
+                mat.uniforms.viewport = Vec4::new(w as f32, h as f32, 0.0, 0.0);
+            }
+        }
+    }
+
+    view.w = w;
+    view.h = h;
+    info!("live2d rtt grow: {w}x{h} (logical {}x{})", target.logical.x, target.logical.y);
+}
 
 pub fn tick_pet(mut pet: NonSendMut<Live2dPet>, time: Res<Time>) {
     pet.tick(time.delta_secs(), time.elapsed_secs());

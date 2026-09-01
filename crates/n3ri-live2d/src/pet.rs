@@ -12,6 +12,7 @@
 use std::collections::HashMap;
 
 use bevy::prelude::*;
+use bevy::ui::{ComputedNode, UiGlobalTransform};
 use live2d_core::canvas::CanvasInfo;
 use live2d_core::model::Model;
 use live2d_motion::breath::Breath;
@@ -244,6 +245,7 @@ pub fn check_idle_timeout(
 
 pub fn detect_petting(
     windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
+    display: Query<(&ComputedNode, &UiGlobalTransform), With<crate::renderer::PetDisplayNode>>,
     mapping: Option<Res<PetMapping>>,
     view_size: Option<Res<PetViewSize>>,
     hit_area: Res<HeadHitArea>,
@@ -270,15 +272,20 @@ pub fn detect_petting(
         return;
     };
 
-    let screen_w = window.width();
-    let screen_h = window.height();
-    let img_w = view_size.w as f32 * crate::renderer::DISPLAY_SCALE;
-    let img_h = view_size.h as f32 * crate::renderer::DISPLAY_SCALE;
-    let img_left = (screen_w - img_w) / 2.0;
-    let img_top = (screen_h - img_h) / 2.0;
+    // 以真实渲染节点矩形做命中检测（任意缩放/refit 结果下都正确；
+    // 旧的手算 view×DISPLAY_SCALE 在非 1.5 缩放下与节点错位）
+    let Ok((node, tf)) = display.single() else {
+        return;
+    };
+    let size = node.size();
+    if size.x <= 0.0 || size.y <= 0.0 {
+        return;
+    }
+    let center = tf.to_scale_angle_translation().2;
+    let rect_min = center - size * 0.5;
 
-    let rtt_x = (cursor.x - img_left) / crate::renderer::DISPLAY_SCALE;
-    let rtt_y = (cursor.y - img_top) / crate::renderer::DISPLAY_SCALE;
+    let rtt_x = (cursor.x - rect_min.x) / size.x * view_size.w as f32;
+    let rtt_y = (cursor.y - rect_min.y) / size.y * view_size.h as f32;
 
     let model_pos = mapping.inverse(rtt_x, rtt_y);
 

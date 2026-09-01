@@ -28,26 +28,32 @@ use bevy_live_wallpaper::{PointerSample, WallpaperPointerState, WallpaperSurface
 
 use crate::cursor::{CursorPosition, UiArea};
 
-/// 卫星进程上行样本：指针绝对位置（XQueryPointer，桌面全局坐标）。
+/// 卫星进程上行样本：指针绝对位置（XQueryPointer，X 屏物理坐标）/ X 屏物理尺寸（开机首行）。
 pub enum SatelliteSample {
     Pos(Vec2),
+    Screen(Vec2),
 }
 
 /// 卫星通道（mpsc 由二进制侧创建并注入；Receiver 非 Sync，Mutex 包裹）。
 #[derive(Resource)]
 pub struct SatelliteDeltaChannel(pub Mutex<std::sync::mpsc::Receiver<SatelliteSample>>);
 
-/// 本帧排干的卫星数据（First 内先于光标合并）。
+/// 本帧排干的卫星位置（First 内先于光标合并）。
 #[derive(Resource, Default)]
 pub struct SatelliteFrame {
     pub pos: Option<Vec2>,
 }
+
+/// 卫星上报的 X 屏物理尺寸（持久，用于推算合成器缩放 = 物理尺寸 / surface 逻辑尺寸）。
+#[derive(Resource, Default)]
+pub struct SatelliteScreen(pub Vec2);
 
 pub struct WallpaperInputBridgePlugin;
 
 impl Plugin for WallpaperInputBridgePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<SatelliteFrame>()
+            .init_resource::<SatelliteScreen>()
             .add_systems(First, (drain_satellite, sync_cursor_from_wallpaper).chain())
             .add_systems(First, inject_mouse_buttons)
             .add_systems(Update, wallpaper_ui_focus_system.after(ui_focus_system));
@@ -57,6 +63,7 @@ impl Plugin for WallpaperInputBridgePlugin {
 fn drain_satellite(
     channel: Option<Res<SatelliteDeltaChannel>>,
     mut frame: ResMut<SatelliteFrame>,
+    mut screen: ResMut<SatelliteScreen>,
 ) {
     frame.pos = None;
     let Some(channel) = channel else {
@@ -68,6 +75,7 @@ fn drain_satellite(
     while let Ok(sample) = rx.try_recv() {
         match sample {
             SatelliteSample::Pos(p) => frame.pos = Some(p),
+            SatelliteSample::Screen(s) => screen.0 = s,
         }
     }
 }
@@ -76,26 +84,38 @@ fn sync_cursor_from_wallpaper(
     pointer: Res<WallpaperPointerState>,
     surface: Res<WallpaperSurfaceInfo>,
     frame: Res<SatelliteFrame>,
+    screen: Res<SatelliteScreen>,
     mut cursor: ResMut<CursorPosition>,
     mut area: ResMut<UiArea>,
 ) {
     area.0 = surface.size;
-    cursor.scale = 1.0;
 
-    // 优先 layer-shell 指针（按钮状态可信的判定窗口）；否则用卫星绝对位置
-    // （XQueryPointer 读合成器最终光标，被遮挡时依然有效，零漂移）
-    if let Some(sample) = pointer.last.as_ref() {
-        let local = sample.position - surface.offset_position;
-        cursor.logical = local;
-        cursor.physical = local;
-        cursor.active = true;
-    } else if let Some(pos) = frame.pos {
-        let local = pos - surface.offset_position;
-        cursor.logical = local;
-        cursor.physical = local;
-        cursor.active = true;
+    // 合成器缩放 = X 屏物理宽度 / surface 逻辑宽度（卫星缺失或异常时回退 1.0）
+    let scale = if screen.0.x > 0.0 && surface.size.x > 0.0 {
+        (screen.0.x / surface.size.x).max(1.0)
     } else {
-        cursor.active = false;
+        1.0
+    };
+    cursor.scale = scale;
+
+    // 优先 layer-shell 指针（按钮状态可信的判定窗口，逻辑坐标）；
+    // 否则用卫星绝对位置（XQueryPointer 物理坐标，被遮挡时依然有效，零漂移）
+    match pointer.last.as_ref() {
+        Some(sample) => {
+            let logical = sample.position - surface.offset_position;
+            cursor.logical = logical;
+            cursor.physical = logical * scale;
+            cursor.active = true;
+        }
+        None => match frame.pos {
+            Some(pos) => {
+                let logical = (pos - surface.offset_position) / scale;
+                cursor.logical = logical;
+                cursor.physical = logical * scale;
+                cursor.active = true;
+            }
+            None => cursor.active = false,
+        },
     }
 }
 

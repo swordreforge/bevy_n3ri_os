@@ -4,14 +4,15 @@ use bevy::ui::IsDefaultUiCamera;
 use bevy_live_wallpaper::{LiveWallpaperCamera, LiveWallpaperPlugin};
 use n3ri_core::prelude::*;
 use n3ri_live2d::{
-    HeadDisplay, Live2dPet,
+    HeadDisplay, Live2dPet, PetTargetArea, PetViewSize,
     spawn_head_display, spawn_pet_display, HeadDisplayWanted, PetDisplayImage, PetDisplayNode,
     PetHeadImage,
 };
+use n3ri_ui::cursor::{CursorPosition, UiArea};
 use n3ri_ui::desktop::DesktopBackgroundMaterial;
 use n3ri_ui::font::N3riFonts;
 use n3ri_ui::wallpaper_bridge::{SatelliteDeltaChannel, WallpaperInputBridgePlugin};
-use n3ri_ui::window::AppWindow;
+use n3ri_ui::window::{AppWindow, CinematicLocked};
 use n3ri_ui::N3riUiPlugin;
 use n3ri_ui::chat_capsule::{ChatEmotionEvent, ChatRise};
 use std::io::{Read, Write};
@@ -80,7 +81,15 @@ fn run_windowed() {
         .add_plugins(n3ri_live2d::N3riLive2dPlugin)
         .add_plugins(focus::FocusPlugin)
         .add_systems(Startup, spawn_camera)
-        .add_systems(Update, (chat_rise_sync, chat_emotion_bridge))
+        .add_systems(
+            Update,
+            (
+                chat_rise_sync,
+                chat_emotion_bridge,
+                sync_pet_target_area,
+                sync_pet_display_node,
+            ),
+        )
         .add_systems(OnEnter(OsState::Boot), spawn_boot_screen)
         .add_systems(
             Update,
@@ -128,6 +137,8 @@ fn run_wallpaper() {
             (
                 chat_rise_sync,
                 chat_emotion_bridge,
+                sync_pet_target_area,
+                sync_pet_display_node,
                 track_satellite_child,
             ),
         )
@@ -148,6 +159,50 @@ fn run_wallpaper() {
 
 fn spawn_camera(mut commands: Commands) {
     commands.spawn(Camera2d);
+}
+
+/// 统一 UiArea → 宠物视口目标（物理像素 = 逻辑 × scale）。
+/// 窗口模式 scale 取自主窗（niri 扩窗即触发 refit）；壁纸模式 scale=1（与壁纸 surface 逻辑链一致）。
+fn sync_pet_target_area(
+    area: Res<UiArea>,
+    cursor: Res<CursorPosition>,
+    mut target: ResMut<PetTargetArea>,
+) {
+    if area.x > 1.0 && area.y > 1.0 {
+        let next = PetTargetArea {
+            logical: area.0,
+            scale: cursor.scale.max(1.0),
+        };
+        if target.logical != next.logical || target.scale != next.scale {
+            *target = next;
+        }
+    }
+}
+
+/// 显示节点零成本跟随：高度驱动 + 锁定 RTT 长宽比（niri 用户习惯只拖宽度、高度不变 →
+/// 宽度拖拽期间节点纹丝不动，零轮询；且节点比例≡RTT 比例，任何时刻无横向拉伸）。
+/// focus 凑近期间（CinematicLocked）节点归动画所有，本系统让位。
+fn sync_pet_display_node(
+    area: Res<UiArea>,
+    view: Res<PetViewSize>,
+    locked: Query<(), With<CinematicLocked>>,
+    mut display: Query<&mut Node, With<PetDisplayNode>>,
+) {
+    if area.y <= 1.0 || view.h == 0 || !locked.is_empty() {
+        return;
+    }
+    let target_h = area.y * n3ri_live2d::renderer::PET_DISPLAY_RATIO;
+    let target_w = target_h * view.w as f32 / view.h as f32;
+    for mut node in &mut display {
+        let matches = matches!(
+            (node.width, node.height),
+            (Val::Px(w), Val::Px(h)) if (w - target_w).abs() <= 0.5 && (h - target_h).abs() <= 0.5
+        );
+        if !matches {
+            node.width = Val::Px(target_w);
+            node.height = Val::Px(target_h);
+        }
+    }
 }
 
 fn spawn_wallpaper_camera(mut commands: Commands) {
@@ -192,14 +247,26 @@ fn spawn_satellite_process(mut commands: Commands) {
                 Ok(0) | Err(_) => break,
                 Ok(_) => {
                     let mut parts = line.split_whitespace();
-                    let sample = match (
-                        parts.next().and_then(|v| v.parse::<f32>().ok()),
-                        parts.next().and_then(|v| v.parse::<f32>().ok()),
-                    ) {
-                        (Some(x), Some(y)) => {
-                            Some(n3ri_ui::wallpaper_bridge::SatelliteSample::Pos(Vec2::new(x, y)))
-                        }
-                        _ => None,
+                    let sample = match parts.next() {
+                        Some("s") => match (
+                            parts.next().and_then(|v| v.parse::<f32>().ok()),
+                            parts.next().and_then(|v| v.parse::<f32>().ok()),
+                        ) {
+                            (Some(w), Some(h)) => Some(
+                                n3ri_ui::wallpaper_bridge::SatelliteSample::Screen(Vec2::new(w, h)),
+                            ),
+                            _ => None,
+                        },
+                        Some(_) => match (
+                            parts.next().and_then(|v| v.parse::<f32>().ok()),
+                            parts.next().and_then(|v| v.parse::<f32>().ok()),
+                        ) {
+                            (Some(x), Some(y)) => {
+                                Some(n3ri_ui::wallpaper_bridge::SatelliteSample::Pos(Vec2::new(x, y)))
+                            }
+                            _ => None,
+                        },
+                        None => None,
                     };
                     if let Some(sample) = sample {
                         let _ = tx.send(sample);
@@ -245,9 +312,20 @@ fn run_satellite() -> i32 {
     };
     let root = conn.setup().roots[screen].root;
 
+    // 首行上报 X 屏物理尺寸（= 逻辑 × 合成器缩放），壁纸侧据此推算真实缩放：
+    // 光标坐标换算与 pet RTT 分辨率都依赖它
+    let stdout = std::sync::Mutex::new(std::io::stdout());
+    {
+        let w = conn.setup().roots[screen].width_in_pixels;
+        let h = conn.setup().roots[screen].height_in_pixels;
+        if let Ok(mut out) = stdout.lock() {
+            let _ = writeln!(out, "s {w} {h}");
+            let _ = out.flush();
+        }
+    }
+
     // 120Hz 轮询 XQueryPointer：读合成器最终光标（触摸板/鼠标通吃、绝对坐标零漂移、
     // 指针被其他窗口遮挡时依然有效）；位置变化才发行，避免无谓的行流
-    let stdout = std::sync::Mutex::new(std::io::stdout());
     let mut last: (i16, i16) = (i16::MIN, i16::MIN);
     loop {
         let Ok(cookie) = conn.query_pointer(root) else {

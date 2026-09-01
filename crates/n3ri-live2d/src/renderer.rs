@@ -58,6 +58,20 @@ pub struct PetViewSize {
     pub h: u32,
 }
 
+/// 宠物渲染质量：RTT 最长边上限（像素）。由二进制侧从 UserSettings.quality_idx
+/// 映射写入（设置 → 显示效果 → 画质：极限性能 1280 / 平衡 1920 / 省电 960）。
+/// 上限只影响物理分辨率，显示节点按 logical×PET_DISPLAY_RATIO 独立跟随，改档实时生效。
+#[derive(Resource, Clone, Copy, PartialEq)]
+pub struct PetRenderConfig {
+    pub rtt_cap: u32,
+}
+
+impl Default for PetRenderConfig {
+    fn default() -> Self {
+        Self { rtt_cap: 1920 }
+    }
+}
+
 /// 期望的宠物视口（由二进制侧从统一 UiArea 喂入；RTT 用 logical×scale 物理分辨率，
 /// 显示节点用 logical×PET_DISPLAY_RATIO 逻辑尺寸，保证两种模式下宠物占屏比例一致）。
 /// `refit_pet_view` 据此运行时重适配全部 RTT/相机/映射/材质/显示节点，
@@ -623,12 +637,13 @@ pub fn load_and_setup_pet(world: &mut World) {
 
 /// 运行时重适配：目标区域变化时同步 RTT 尺寸、相机、PetMapping、材质 viewport、
 /// 显示节点。窗口模式（niri 扩窗）与壁纸模式（surface 配置就绪）都由此收敛到真实区域。
-/// RTT 扩容（只增不减 + 防抖）：目标持续大于当前分辨率 0.5s 才执行整套重建
-/// （图像/相机/映射/材质一次到位）。缩窗与同尺寸变化零开销；
+/// RTT 尺寸变化（增/减）都经 0.5s 防抖后整套重建（图像/相机/映射/材质一次到位），
+/// 防抖避免拖拽/改档过程中的逐帧重建；尺寸不变时零开销。
 /// 显示节点由二进制侧按逻辑区域连续跟随（零成本，见 examples/minimal sync_pet_display_node）。
 pub(crate) fn refit_pet_view(
     target: Res<PetTargetArea>,
     mut view: ResMut<PetViewSize>,
+    config: Res<PetRenderConfig>,
     rig: Option<Res<PetRefitRig>>,
     render_rig: Option<Res<Live2dRenderRig>>,
     mut mapping: ResMut<PetMapping>,
@@ -645,11 +660,14 @@ pub(crate) fn refit_pet_view(
         return;
     }
     let scale = target.scale.max(1.0);
-    let (w, h) = (
+    let (mut w, mut h) = (
         (target.logical.x * scale).max(1.0) as u32,
         (target.logical.y * scale).max(1.0) as u32,
     );
-    if w <= view.w && h <= view.h {
+    let shrink = f32::min(1.0, config.rtt_cap as f32 / w.max(h) as f32);
+    w = ((w as f32 * shrink) as u32).max(1);
+    h = ((h as f32 * shrink) as u32).max(1);
+    if w == view.w && h == view.h {
         *grow_timer = 0.0;
         return;
     }
@@ -706,7 +724,7 @@ pub(crate) fn refit_pet_view(
 
     view.w = w;
     view.h = h;
-    info!("live2d rtt grow: {w}x{h} (logical {}x{})", target.logical.x, target.logical.y);
+    info!("live2d rtt refit: {w}x{h} (logical {}x{})", target.logical.x, target.logical.y);
 }
 
 pub fn tick_pet(mut pet: NonSendMut<Live2dPet>, time: Res<Time>) {

@@ -19,6 +19,7 @@ use n3ri_ui::chat_capsule::{ChatEmotionEvent, ChatRise};
 use std::io::{Read, Write};
 use x11rb::connection::Connection;
 use x11rb::protocol::xproto::ConnectionExt;
+use x11rb::protocol::Event as X11Event;
 
 mod focus;
 
@@ -264,6 +265,18 @@ fn spawn_satellite_process(mut commands: Commands) {
                 Ok(_) => {
                     let mut parts = line.split_whitespace();
                     let sample = match parts.next() {
+                        Some("w") => match (
+                            parts.next().and_then(|v| v.parse::<f32>().ok()),
+                            parts.next().and_then(|v| v.parse::<f32>().ok()),
+                        ) {
+                            (Some(dx), Some(dy)) => {
+                                eprintln!("[reader] w {dx} {dy}");
+                                Some(
+                                    n3ri_ui::wallpaper_bridge::SatelliteSample::Scroll(Vec2::new(dx, dy)),
+                                )
+                            }
+                            _ => None,
+                        },
                         Some("s") => match (
                             parts.next().and_then(|v| v.parse::<f32>().ok()),
                             parts.next().and_then(|v| v.parse::<f32>().ok()),
@@ -328,6 +341,10 @@ fn run_satellite() -> i32 {
     };
     let root = conn.setup().roots[screen].root;
 
+    // 核心协议按钮事件：在根窗上选中 BUTTON_PRESS/BUTTON_RELEASE（全局捕获，指针被遮挡时
+    // 依然有效）。滚轮在 X11 中是按钮 4/5/6/7 的 press/release 对。失败仅降级为无滚轮，指针流不受影响。
+    let wheel_ok = setup_wheel_capture(&conn, root);
+
     // 首行上报 X 屏物理尺寸（= 逻辑 × 合成器缩放），壁纸侧据此推算真实缩放：
     // 光标坐标换算与 pet RTT 分辨率都依赖它
     let stdout = std::sync::Mutex::new(std::io::stdout());
@@ -343,7 +360,56 @@ fn run_satellite() -> i32 {
     // 120Hz 轮询 XQueryPointer：读合成器最终光标（触摸板/鼠标通吃、绝对坐标零漂移、
     // 指针被其他窗口遮挡时依然有效）；位置变化才发行，避免无谓的行流
     let mut last: (i16, i16) = (i16::MIN, i16::MIN);
+    let mut wheel: (f32, f32) = (0.0, 0.0);
     loop {
+        if wheel_ok {
+            // 排干按钮事件：滚轮按钮 4/5/6/7 累积为 dx/dy（press/release 成对，
+            // 只计 press 避免翻倍；触摸板两指滚动同样产生按钮 4/5）
+            while let Ok(Some(event)) = conn.poll_for_event() {
+                let detail = match event {
+                    X11Event::ButtonPress(ev) => Some(u32::from(ev.detail)),
+                    X11Event::ButtonRelease(ev) => {
+                        eprintln!("[卫星] button RELEASE detail={}", ev.detail);
+                        None
+                    }
+                    X11Event::MotionNotify(ev) => {
+                        eprintln!("[卫星] motion ({}, {})", ev.root_x, ev.root_y);
+                        None
+                    }
+                    X11Event::EnterNotify(ev) => {
+                        eprintln!("[卫星] enter (mode={:?})", ev.mode);
+                        None
+                    }
+                    X11Event::LeaveNotify(ev) => {
+                        eprintln!("[卫星] leave (mode={:?})", ev.mode);
+                        None
+                    }
+                    other => {
+                        eprintln!("[卫星] OTHER EVENT: {:?}", other);
+                        None
+                    }
+                };
+                if let Some(d) = detail {
+                    eprintln!("[卫星] button press detail={d}");
+                }
+                match detail {
+                    Some(4) => wheel.1 += 1.0,
+                    Some(5) => wheel.1 -= 1.0,
+                    Some(6) => wheel.0 -= 1.0,
+                    Some(7) => wheel.0 += 1.0,
+                    _ => {}
+                }
+            }
+            if wheel.0 != 0.0 || wheel.1 != 0.0 {
+                eprintln!("[卫星] emit w {} {}", wheel.0, wheel.1);
+                if let Ok(mut out) = stdout.lock() {
+                    let _ = writeln!(out, "w {} {}", wheel.0, wheel.1);
+                    let _ = out.flush();
+                }
+                wheel = (0.0, 0.0);
+            }
+        }
+
         let Ok(cookie) = conn.query_pointer(root) else {
             std::thread::sleep(std::time::Duration::from_millis(16));
             continue;
@@ -363,6 +429,24 @@ fn run_satellite() -> i32 {
         }
         std::thread::sleep(std::time::Duration::from_millis(8));
     }
+}
+
+/// 根窗选中核心协议按钮事件（滚轮 = 按钮 4/5/6/7）。返回是否成功（失败降级为无滚轮）。
+///
+/// 注意：不用 XI2 raw 事件——xwayland-satellite（合成器桥）不产生 raw 事件（raw 源自
+/// 设备驱动层真实硬件输入），合成器只把触摸板两指滚动转成按钮 4/5 的普通 press/release 对。
+/// 核心协议 BUTTON_PRESS 是所有 X server 必须实现的。
+fn setup_wheel_capture(conn: &impl Connection, root: x11rb::protocol::xproto::Window) -> bool {
+    // 核心协议按钮事件（xdotool XTEST 验证通过）
+    let core_aux = x11rb::protocol::xproto::ChangeWindowAttributesAux::new().event_mask(
+        x11rb::protocol::xproto::EventMask::BUTTON_PRESS
+            | x11rb::protocol::xproto::EventMask::BUTTON_RELEASE,
+    );
+    if let Err(e) = conn.change_window_attributes(root, &core_aux) {
+        eprintln!("[卫星] ChangeWindowAttributes 失败({e})，滚轮转发禁用");
+        return false;
+    }
+    true
 }
 
 // ── Phase 1: Boot ────────────────────────────────────────────────────

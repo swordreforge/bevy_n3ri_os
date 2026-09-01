@@ -19,8 +19,9 @@ cargo run -p n3ri-minimal -- --wallpaper   # 壁纸模式（layer-shell 桌面�
 cargo run -p n3ri-minimal -- --satellite   # 全局指针卫星进程（壁纸模式自动拉起，也可手动调试）
 ```
 
-壁纸模式限制：无键盘/IME/滚轮直通层（滚轮仅在指针位于壁纸 surface 上时由卫星转发）；
-指针被其他窗口遮挡时卫星 delta 外推视差；需 `input` 组权限（`sudo usermod -aG input $USER` 后重新登录）。
+壁纸模式限制：无键盘/IME 直通层；指针被其他窗口遮挡时卫星 delta 外推视差；
+需 `input` 组权限（`sudo usermod -aG input $USER` 后重新登录）。
+滚轮（触摸板/鼠标）经 vendored `bevy_live_wallpaper` 的 Wayland axis 捕获，指针位于壁纸 surface 上时生效。
 设置 → 显示效果 → 壁纸模式 开关可互斥切换两种模式（自我重启）。
 
 No other binary targets exist. The only runnable crate is `examples/minimal`（单二进制三模式：默认窗口 / `--wallpaper` / `--satellite`）.
@@ -34,6 +35,7 @@ crates/n3ri-ui/     # all UI: dock, topbar, window mgmt, apps, shader, cursor/wa
 crates/n3ri-llm/    # OpenAI 兼容 LLM 客户端
 crates/n3ri-live2d/ # Live2D 桌面宠物
 examples/minimal/   # the actual binary — 窗口/壁纸/卫星三模式入口
+vendor/             # vendored deps（本地补丁）— 当前含 bevy_live_wallpaper
 assets/nori/        # extracted from os.inori.ai — fonts, icons, textures, audio
 assets/shaders/     # WGSL shaders (desktop_background.wgsl)
 ```
@@ -45,10 +47,22 @@ assets/shaders/     # WGSL shaders (desktop_background.wgsl)
   窗口模式由 `sync_cursor_from_window`（First）同步；壁纸模式由 `wallpaper_bridge` 合并系统写入。
 - `wallpaper_bridge.rs`（仅壁纸模式注册）：layer-shell 指针 + 卫星 delta 合并光标；
   按钮 diff → `MouseButtonInput` 消息（避免与 `ButtonInput` 每帧 clear 竞态）；
+  滚轮 = `inject_mouse_wheel` 合并两条路径——vendored `WallpaperPointerState.scroll`
+  （Wayland `wl_pointer.axis`，真实触摸板/鼠标滚轮）与卫星 `w dx dy`（仅 XTEST 合成事件可达），
+  写成 `MouseWheel` 消息由 `scroll_wheel_system` 消费；`WallpaperPointerState.scroll` 消费后清零；
   `wallpaper_ui_focus_system` 复刻 bevy `ui_focus_system`（原版对 Image 相机直接跳过 Interaction）
   并 `.after(ui_focus_system)` 覆盖其重置结果。
 - 卫星协议：stdout 行流 `x y`（XQueryPointer 轮询的桌面全局绝对坐标，位置变化才发行，~120Hz）；
-  父进程退出 → stdin EOF → 卫星自杀。触摸板/鼠标通吃；被遮挡时指针坐标依然有效。壁纸模式 v1 无键盘/IME/滚轮。
+  `w dx dy`（核心协议按钮 4/5/6/7 滚轮增量，仅 press 计一次，变化才发行）；
+  父进程退出 → stdin EOF → 卫星自杀。触摸板/鼠标通吃；被遮挡时指针坐标依然有效。壁纸模式 v1 无键盘/IME。
+
+### 壁纸模式滚轮（vendored bevy_live_wallpaper）
+
+壁纸 surface 是 bevy 进程自己的 layer-shell surface——指针在其上时，合成器把 `wl_pointer.axis`
+发给 **bevy 自己的 Wayland 连接**，xwayland-satellite 永远看不到真实触摸板滚动（XInput `present=false`）。
+因此依赖必须 vendored（`vendor/bevy_live_wallpaper`，0.5.0 为最终版本）：`Dispatch<wl_pointer>`
+处理 `Axis` 事件 → `PendingPointerEventKind::Scroll` → `apply_pointer_events` 累积进
+`WallpaperPointerState.scroll`。**不要改回 crates.io 版本**，否则真实滚动丢失。
 
 Commented-out crates (not in workspace): `n3ri-render`, `n3ri-audio`, `n3ri-live2d`, `n3ri-apps`.
 Live2D FFI crates exist in `crates/` but are not workspace members.

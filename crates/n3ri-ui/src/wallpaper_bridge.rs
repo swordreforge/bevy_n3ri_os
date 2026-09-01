@@ -16,7 +16,8 @@ use std::collections::HashSet;
 use std::sync::Mutex;
 
 use bevy::ecs::query::QueryData;
-use bevy::input::mouse::MouseButtonInput;
+use bevy::input::mouse::{MouseButtonInput, MouseScrollUnit, MouseWheel};
+use bevy::input::touch::TouchPhase;
 use bevy::input::ButtonState;
 use bevy::prelude::*;
 use bevy::ui::clip_check_recursive;
@@ -29,10 +30,12 @@ use bevy_live_wallpaper::{PointerSample, WallpaperPointerState, WallpaperSurface
 use crate::cursor::{CursorPosition, UiArea};
 use crate::dock::DockIcon;
 
-/// 卫星进程上行样本：指针绝对位置（XQueryPointer，X 屏物理坐标）/ X 屏物理尺寸（开机首行）。
+/// 卫星进程上行样本：指针绝对位置（XQueryPointer，X 屏物理坐标）/ X 屏物理尺寸（开机首行）/
+/// 滚轮增量（XI2 raw 按钮 4/5/6/7 合并，仅 press 计一次）。
 pub enum SatelliteSample {
     Pos(Vec2),
     Screen(Vec2),
+    Scroll(Vec2),
 }
 
 /// 卫星通道（mpsc 由二进制侧创建并注入；Receiver 非 Sync，Mutex 包裹）。
@@ -43,6 +46,7 @@ pub struct SatelliteDeltaChannel(pub Mutex<std::sync::mpsc::Receiver<SatelliteSa
 #[derive(Resource, Default)]
 pub struct SatelliteFrame {
     pub pos: Option<Vec2>,
+    pub scroll: Vec2,
 }
 
 /// 卫星上报的 X 屏物理尺寸（持久，用于推算合成器缩放 = 物理尺寸 / surface 逻辑尺寸）。
@@ -57,6 +61,7 @@ impl Plugin for WallpaperInputBridgePlugin {
             .init_resource::<SatelliteScreen>()
             .add_systems(First, (drain_satellite, sync_cursor_from_wallpaper).chain())
             .add_systems(First, inject_mouse_buttons)
+            .add_systems(First, inject_mouse_wheel.after(drain_satellite))
             .add_systems(
                 PreUpdate,
                 wallpaper_ui_focus_system.after(bevy::ui::UiSystems::Focus),
@@ -187,6 +192,7 @@ fn drain_satellite(
     mut screen: ResMut<SatelliteScreen>,
 ) {
     frame.pos = None;
+    frame.scroll = Vec2::ZERO;
     let Some(channel) = channel else {
         return;
     };
@@ -197,6 +203,10 @@ fn drain_satellite(
         match sample {
             SatelliteSample::Pos(p) => frame.pos = Some(p),
             SatelliteSample::Screen(s) => screen.0 = s,
+            SatelliteSample::Scroll(s) => {
+                eprintln!("[bridge] scroll sample: {s:?}");
+                frame.scroll += s;
+            }
         }
     }
 }
@@ -283,6 +293,38 @@ fn inject_mouse_buttons(
         }
     }
     *prev_pressed = current;
+}
+
+/// 滚轮注入：两条路径合并——vendor 补丁的 Wayland `wl_pointer.axis` 累积
+/// （`WallpaperPointerState.scroll`，PostUpdate 累积、本系统消费后清零）与卫星
+/// XI2 raw 事件增量（`frame.scroll`）。指针位于 surface 上时写成 `MouseWheel`
+/// 消息（与按钮注入同门控），由 scroll_wheel_system / 终端滚动消费。窗口字段用
+/// PLACEHOLDER——消费方只读 x/y，且壁纸模式无真实窗口实体。
+fn inject_mouse_wheel(
+    mut pointer: ResMut<WallpaperPointerState>,
+    frame: Res<SatelliteFrame>,
+    mut events: MessageWriter<MouseWheel>,
+) {
+    let scroll = pointer.scroll + frame.scroll;
+    pointer.scroll = Vec2::ZERO;
+    if pointer.last.is_none() || scroll == Vec2::ZERO {
+        if scroll != Vec2::ZERO {
+            eprintln!(
+                "[bridge] inject wheel SKIP: on_surface={} scroll={:?}",
+                pointer.last.is_some(),
+                scroll
+            );
+        }
+        return;
+    }
+    eprintln!("[bridge] inject wheel: {:?}", scroll);
+    events.write(MouseWheel {
+        unit: MouseScrollUnit::Line,
+        x: scroll.x,
+        y: scroll.y,
+        window: Entity::PLACEHOLDER,
+        phase: TouchPhase::Moved,
+    });
 }
 
 #[derive(QueryData)]

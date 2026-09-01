@@ -8,6 +8,7 @@ use std::io::{Read, Write};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 
+use crate::cursor::CursorPosition;
 use crate::dock::IsDragging;
 use crate::font::{FontContext, N3riFonts};
 use crate::input_focus::{TextInputFocus, TextInputOwner};
@@ -686,7 +687,7 @@ fn terminal_sync_output(
     mut state: ResMut<TerminalState>,
     mut mouse_wheel: MessageReader<MouseWheel>,
     focused: Res<FocusedTitle>,
-    windows: Query<&Window>,
+    cursor: Res<CursorPosition>,
     output: Query<(&ComputedNode, &UiGlobalTransform), With<TerminalOutput>>,
 ) {
     let pending: String = {
@@ -713,21 +714,16 @@ fn terminal_sync_output(
     }
 
     let cursor_over_terminal = focused.title == "终端"
-        && windows
-            .single()
-            .ok()
-            .and_then(Window::physical_cursor_position)
-            .is_some_and(|cursor| {
-                output.iter().any(|(node, transform)| {
-                    transform
-                        .try_inverse()
-                        .map(|inverse| inverse.transform_point2(cursor))
-                        .is_some_and(|local| {
-                            let half = node.size() * 0.5;
-                            local.x.abs() <= half.x && local.y.abs() <= half.y
-                        })
+        && cursor.active
+        && output.iter().any(|(node, transform)| {
+            transform
+                .try_inverse()
+                .map(|inverse| inverse.transform_point2(cursor.physical))
+                .is_some_and(|local| {
+                    let half = node.size() * 0.5;
+                    local.x.abs() <= half.x && local.y.abs() <= half.y
                 })
-            });
+        });
 
     for wheel in mouse_wheel.read().filter(|_| cursor_over_terminal) {
         let delta = (wheel.y * 3.0).round() as isize;

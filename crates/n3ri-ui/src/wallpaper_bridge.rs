@@ -99,19 +99,21 @@ fn sync_cursor_from_wallpaper(
     cursor.scale = scale;
 
     // 优先 layer-shell 指针（按钮状态可信的判定窗口，逻辑坐标）；
-    // 否则用卫星绝对位置（XQueryPointer 物理坐标，被遮挡时依然有效，零漂移）
+    // 否则用卫星绝对位置（XQueryPointer 物理坐标，被遮挡时依然有效，零漂移）。
+    // physical 语义 = UI 渲染空间像素：壁纸 UI 目标是逻辑尺寸的 Image（bevy scale=1.0），
+    // 因此两条路径的 physical 都等于 logical，绝不乘合成器 scale（那是 pet RTT 专用）。
     match pointer.last.as_ref() {
         Some(sample) => {
             let logical = sample.position - surface.offset_position;
             cursor.logical = logical;
-            cursor.physical = logical * scale;
+            cursor.physical = logical;
             cursor.active = true;
         }
         None => match frame.pos {
             Some(pos) => {
                 let logical = (pos - surface.offset_position) / scale;
                 cursor.logical = logical;
-                cursor.physical = logical * scale;
+                cursor.physical = logical;
                 cursor.active = true;
             }
             None => cursor.active = false,

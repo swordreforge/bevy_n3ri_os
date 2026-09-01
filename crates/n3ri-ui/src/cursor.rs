@@ -11,8 +11,10 @@ use bevy::window::PrimaryWindow;
 pub struct CursorPosition {
     /// 逻辑像素（UI 坐标，左上原点）
     pub logical: Vec2,
-    /// 物理像素（逻辑 × scale）
+    /// UI 渲染空间像素（窗口模式 = 物理像素 = 逻辑×scale；壁纸模式 = Image 像素 = 逻辑，
+    /// bevy 对 Image 目标取 scale_factor=1.0，命中检测一律用本字段）
     pub physical: Vec2,
+    /// 合成器缩放（壁纸模式来自卫星 X 屏尺寸/逻辑尺寸；仅供 pet RTT 等非 UI 用途）
     pub scale: f32,
     /// 光标是否位于界面区域内（窗口模式 = 在主窗内；离开时交互系统按无光标处理）
     pub active: bool,

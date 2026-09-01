@@ -124,6 +124,24 @@ fn run_wallpaper() {
         .add_plugins(focus::FocusPlugin)
         .add_plugins(LiveWallpaperPlugin::default())
         .add_plugins(WallpaperInputBridgePlugin)
+        // 无主窗口时 winit 判定"未聚焦"走 reactive_low_power，整应用掉到 ~8fps：
+        // 按键释放延迟一帧以上（双击间隔被拉到秒级、dock 不跟手）。
+        // Continuous 在无窗口下不会触发重绘（应用冻结），Reactive+wait 是唯一
+        // 既有节奏又持续 tick 的模式，15ms ≈ 66fps 上限。
+        .insert_resource(bevy::winit::WinitSettings {
+            focused_mode: bevy::winit::UpdateMode::Reactive {
+                wait: std::time::Duration::from_millis(15),
+                react_to_device_events: true,
+                react_to_user_events: true,
+                react_to_window_events: true,
+            },
+            unfocused_mode: bevy::winit::UpdateMode::Reactive {
+                wait: std::time::Duration::from_millis(15),
+                react_to_device_events: true,
+                react_to_user_events: true,
+                react_to_window_events: true,
+            },
+        })
         .add_systems(Startup, (spawn_wallpaper_camera, spawn_satellite_process))
         .add_systems(
             Update,

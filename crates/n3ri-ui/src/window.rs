@@ -580,7 +580,7 @@ fn handle_minimize_button(
 
 fn handle_maximize_button(
     mouse: Res<ButtonInput<MouseButton>>,
-    windows: Query<&Window>,
+    area: Res<UiArea>,
     query: Query<(Entity, &MaximizeButton, &Interaction)>,
     child_of_query: Query<&ChildOf>,
     window_query: Query<Entity, With<AppWindow>>,
@@ -592,9 +592,6 @@ fn handle_maximize_button(
     if !mouse.just_pressed(MouseButton::Left) {
         return;
     }
-    let Ok(bevy_window) = windows.single() else {
-        return;
-    };
 
     for (entity, _, interaction) in query.iter() {
         if *interaction != Interaction::Pressed {
@@ -636,8 +633,8 @@ fn handle_maximize_button(
                     height: orig_height,
                 });
 
-                let screen_w = bevy_window.resolution.width();
-                let screen_h = bevy_window.resolution.height();
+                let screen_w = area.x;
+                let screen_h = area.y;
                 let usable_top = TOPBAR_HEIGHT;
                 let usable_h = (screen_h - DOCK_TOTAL_HEIGHT - TOPBAR_HEIGHT).max(0.0);
                 node.left = Val::Px(0.0);

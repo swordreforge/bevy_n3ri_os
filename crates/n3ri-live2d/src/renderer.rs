@@ -827,10 +827,12 @@ pub fn sync_live2d(world: &mut World) {
 
 // ── desktop UI integration ──
 
+/// 显示节点尺寸由调用方按模式一次定格（窗口模式 = 视口/scale×0.75；壁纸模式 = surface×0.75），
+/// 此后不跟随窗口变化。
 pub fn spawn_pet_display(
     parent: &mut ChildSpawnerCommands<'_>,
     image: &Handle<Image>,
-    view_size: &PetViewSize,
+    node_size: Vec2,
 ) {
     parent
         .spawn(Node {
@@ -851,8 +853,8 @@ pub fn spawn_pet_display(
                     ..default()
                 },
                 Node {
-                    width: Val::Px(view_size.w as f32 * DISPLAY_SCALE),
-                    height: Val::Px(view_size.h as f32 * DISPLAY_SCALE),
+                    width: Val::Px(node_size.x),
+                    height: Val::Px(node_size.y),
                     ..default()
                 },
             ));

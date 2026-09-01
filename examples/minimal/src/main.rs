@@ -1,18 +1,19 @@
 use bevy::audio::GlobalVolume;
 use bevy::prelude::*;
 use bevy::ui::IsDefaultUiCamera;
+use bevy::window::PrimaryWindow;
 use bevy_live_wallpaper::{LiveWallpaperCamera, LiveWallpaperPlugin};
 use n3ri_core::prelude::*;
 use n3ri_live2d::{
-    HeadDisplay, Live2dPet, PetTargetArea, PetViewSize,
-    spawn_head_display, spawn_pet_display, HeadDisplayWanted, PetDisplayImage, PetDisplayNode,
+    HeadDisplay, Live2dPet, PetDisplayNode, PetTargetArea,
+    spawn_head_display, spawn_pet_display, HeadDisplayWanted, PetDisplayImage,
     PetHeadImage,
 };
 use n3ri_ui::cursor::{CursorPosition, UiArea};
 use n3ri_ui::desktop::DesktopBackgroundMaterial;
 use n3ri_ui::font::N3riFonts;
 use n3ri_ui::wallpaper_bridge::{SatelliteDeltaChannel, WallpaperInputBridgePlugin};
-use n3ri_ui::window::{AppWindow, CinematicLocked};
+use n3ri_ui::window::AppWindow;
 use n3ri_ui::N3riUiPlugin;
 use n3ri_ui::chat_capsule::{ChatEmotionEvent, ChatRise};
 use std::io::{Read, Write};
@@ -81,15 +82,7 @@ fn run_windowed() {
         .add_plugins(n3ri_live2d::N3riLive2dPlugin)
         .add_plugins(focus::FocusPlugin)
         .add_systems(Startup, spawn_camera)
-        .add_systems(
-            Update,
-            (
-                chat_rise_sync,
-                chat_emotion_bridge,
-                sync_pet_target_area,
-                sync_pet_display_node,
-            ),
-        )
+        .add_systems(Update, (chat_rise_sync, chat_emotion_bridge))
         .add_systems(OnEnter(OsState::Boot), spawn_boot_screen)
         .add_systems(
             Update,
@@ -138,7 +131,6 @@ fn run_wallpaper() {
                 chat_rise_sync,
                 chat_emotion_bridge,
                 sync_pet_target_area,
-                sync_pet_display_node,
                 track_satellite_child,
             ),
         )
@@ -175,32 +167,6 @@ fn sync_pet_target_area(
         };
         if target.logical != next.logical || target.scale != next.scale {
             *target = next;
-        }
-    }
-}
-
-/// 显示节点零成本跟随：高度驱动 + 锁定 RTT 长宽比（niri 用户习惯只拖宽度、高度不变 →
-/// 宽度拖拽期间节点纹丝不动，零轮询；且节点比例≡RTT 比例，任何时刻无横向拉伸）。
-/// focus 凑近期间（CinematicLocked）节点归动画所有，本系统让位。
-fn sync_pet_display_node(
-    area: Res<UiArea>,
-    view: Res<PetViewSize>,
-    locked: Query<(), With<CinematicLocked>>,
-    mut display: Query<&mut Node, With<PetDisplayNode>>,
-) {
-    if area.y <= 1.0 || view.h == 0 || !locked.is_empty() {
-        return;
-    }
-    let target_h = area.y * n3ri_live2d::renderer::PET_DISPLAY_RATIO;
-    let target_w = target_h * view.w as f32 / view.h as f32;
-    for mut node in &mut display {
-        let matches = matches!(
-            (node.width, node.height),
-            (Val::Px(w), Val::Px(h)) if (w - target_w).abs() <= 0.5 && (h - target_h).abs() <= 0.5
-        );
-        if !matches {
-            node.width = Val::Px(target_w);
-            node.height = Val::Px(target_h);
         }
     }
 }
@@ -543,12 +509,29 @@ fn spawn_desktop_screen(
     pet_image: Res<PetDisplayImage>,
     pet_head: Res<PetHeadImage>,
     view_size: Res<n3ri_live2d::PetViewSize>,
+    windows: Query<&Window, With<PrimaryWindow>>,
+    wallpaper_surface: Option<Res<bevy_live_wallpaper::WallpaperSurfaceInfo>>,
     mut images: ResMut<Assets<Image>>,
     mut bg_materials: ResMut<Assets<DesktopBackgroundMaterial>>,
 ) {
     for entity in query.iter() {
         commands.entity(entity).despawn();
     }
+
+    // 宠物节点一次定格：窗口模式 = 视口物理尺寸/scale × 0.75；壁纸模式 = surface 逻辑 × 0.75
+    let pet_node_size = match windows.single() {
+        Ok(window) => {
+            let scale = window.scale_factor().max(1.0);
+            Vec2::new(
+                view_size.w as f32 / scale * n3ri_live2d::renderer::PET_DISPLAY_RATIO,
+                view_size.h as f32 / scale * n3ri_live2d::renderer::PET_DISPLAY_RATIO,
+            )
+        }
+        Err(_) => match wallpaper_surface.as_ref() {
+            Some(surface) if surface.size.x > 1.0 => surface.size * n3ri_live2d::renderer::PET_DISPLAY_RATIO,
+            _ => Vec2::new(600.0, 450.0),
+        },
+    };
 
     commands
         .spawn((
@@ -570,7 +553,7 @@ fn spawn_desktop_screen(
                 &mut bg_materials,
             );
             if let Some(image) = pet_image.0.clone() {
-                spawn_pet_display(parent, &image, &view_size);
+                spawn_pet_display(parent, &image, pet_node_size);
             }
             n3ri_ui::topbar::spawn_topbar(parent, &asset_server, &fonts);
             n3ri_ui::dock::spawn_dock(parent, &asset_server, &fonts);

@@ -1,5 +1,6 @@
 use bevy::prelude::*;
 
+use crate::cursor::{CursorPosition, UiArea};
 use crate::dock::IsDragging;
 use crate::window::{AppWindow, CinematicLocked, WindowDrag};
 
@@ -58,7 +59,8 @@ struct SnapState {
 }
 
 fn detect_snap_zone(
-    windows: Query<&Window>,
+    cursor_res: Res<CursorPosition>,
+    area: Res<UiArea>,
     is_dragging: Res<IsDragging>,
     drag_query: Query<(Entity, &WindowDrag), With<AppWindow>>,
     mut snap_state: ResMut<SnapState>,
@@ -71,14 +73,12 @@ fn detect_snap_zone(
         return;
     }
 
-    let Ok(window) = windows.single() else {
+    if !cursor_res.active {
         return;
-    };
-    let Some(cursor) = window.cursor_position() else {
-        return;
-    };
-    let screen_w = window.resolution.width();
-    let screen_h = window.resolution.height();
+    }
+    let cursor = cursor_res.logical;
+    let screen_w = area.x;
+    let screen_h = area.y;
     let usable_top = TOPBAR_HEIGHT;
     let usable_h = (screen_h - DOCK_TOTAL_HEIGHT - TOPBAR_HEIGHT).max(0.0);
     let half_w = screen_w / 2.0;

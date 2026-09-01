@@ -1,6 +1,7 @@
 use bevy::prelude::*;
 use bevy::ecs::relationship::Relationship;
 
+use crate::cursor::{CursorPosition, UiArea};
 use crate::font::N3riFonts;
 use crate::window::AppWindow;
 
@@ -238,18 +239,16 @@ pub fn spawn_dock(parent: &mut ChildSpawnerCommands, asset_server: &AssetServer,
 }
 
 fn dock_magnification(
-    windows: Query<&Window>,
+    cursor: Res<CursorPosition>,
+    area: Res<UiArea>,
     is_dragging: Res<IsDragging>,
     mut icon_query: Query<(&DockIcon, &mut Node), Without<crate::scroll::ScrollbarThumb>>,
 ) {
     if is_dragging.0 {
         return;
     }
-    let Ok(window) = windows.single() else {
-        return;
-    };
-    let screen_width = window.resolution.width();
-    let screen_height = window.resolution.height();
+    let screen_width = area.x;
+    let screen_height = area.y;
 
     let dock_bottom_y = screen_height - 8.0 - 4.0;
 
@@ -257,13 +256,14 @@ fn dock_magnification(
     let total_icons_width = icon_count * ICON_TOTAL;
     let dock_start_x = (screen_width - total_icons_width) / 2.0;
 
-    let Some(cursor) = window.cursor_position() else {
+    if !cursor.active {
         for (_, mut node) in icon_query.iter_mut() {
             node.width = Val::Px(ICON_BASE_SIZE);
             node.height = Val::Px(ICON_BASE_SIZE + 10.0);
         }
         return;
-    };
+    }
+    let cursor = cursor.logical;
 
     let y_distance = (cursor.y - dock_bottom_y).abs();
     if y_distance > MAGNETIC_RANGE {

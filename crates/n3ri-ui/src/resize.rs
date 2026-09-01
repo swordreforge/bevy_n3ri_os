@@ -1,6 +1,7 @@
 use bevy::prelude::*;
-use bevy::window::{CursorIcon, SystemCursorIcon};
+use bevy::window::{CursorIcon, PrimaryWindow, SystemCursorIcon};
 
+use crate::cursor::CursorPosition;
 use crate::dock::IsDragging;
 use crate::window::{AppWindow, CinematicLocked};
 
@@ -118,7 +119,8 @@ fn edge_to_cursor_icon(edge: ResizeEdge) -> Option<SystemCursorIcon> {
 }
 
 fn resize_hover_cursor(
-    windows: Query<(Entity, &Window)>,
+    windows: Query<Entity, With<PrimaryWindow>>,
+    cursor: Res<CursorPosition>,
     window_query: Query<(Entity, &Node, &Visibility, &AppWindow), With<AppWindow>>,
     is_dragging: Res<IsDragging>,
     resize_state: Res<ResizeState>,
@@ -127,13 +129,14 @@ fn resize_hover_cursor(
     if is_dragging.0 || resize_state.resizing_window.is_some() {
         return;
     }
-    let Ok((window_entity, bevy_window)) = windows.single() else {
+    let Ok(window_entity) = windows.single() else {
         return;
     };
-    let Some(cursor) = bevy_window.cursor_position() else {
+    if !cursor.active {
         commands.entity(window_entity).remove::<CursorIcon>();
         return;
-    };
+    }
+    let cursor = cursor.logical;
 
     let mut candidates: Vec<_> = window_query.iter().collect();
     candidates.sort_by_key(|(_, _, _, a)| -a.z);
@@ -165,7 +168,7 @@ fn resize_hover_cursor(
 
 fn resize_start(
     mouse: Res<ButtonInput<MouseButton>>,
-    windows: Query<&Window>,
+    cursor: Res<CursorPosition>,
     window_query: Query<(Entity, &Node, &Visibility, &AppWindow), With<AppWindow>>,
     locked_query: Query<(), With<CinematicLocked>>,
     mut resize_state: ResMut<ResizeState>,
@@ -178,12 +181,10 @@ fn resize_start(
     if is_dragging.0 {
         return;
     }
-    let Ok(bevy_window) = windows.single() else {
+    if !cursor.active {
         return;
-    };
-    let Some(cursor) = bevy_window.cursor_position() else {
-        return;
-    };
+    }
+    let cursor = cursor.logical;
 
     let mut candidates: Vec<_> = window_query.iter().collect();
     candidates.sort_by_key(|(_, _, _, a)| -a.z);
@@ -213,19 +214,17 @@ fn resize_start(
 }
 
 fn resize_apply(
-    windows: Query<&Window>,
+    cursor: Res<CursorPosition>,
     resize_state: Res<ResizeState>,
     mut window_query: Query<&mut Node, With<AppWindow>>,
 ) {
     let Some(window_entity) = resize_state.resizing_window else {
         return;
     };
-    let Ok(bevy_window) = windows.single() else {
+    if !cursor.active {
         return;
-    };
-    let Some(cursor) = bevy_window.cursor_position() else {
-        return;
-    };
+    }
+    let cursor = cursor.logical;
     let Ok(mut node) = window_query.get_mut(window_entity) else {
         return;
     };

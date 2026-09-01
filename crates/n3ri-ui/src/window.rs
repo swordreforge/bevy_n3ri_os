@@ -1,3 +1,4 @@
+use crate::cursor::{CursorPosition, UiArea};
 use crate::dock::{AppVisible, IsDragging};
 use crate::font::N3riFonts;
 use bevy::ecs::relationship::Relationship;
@@ -268,7 +269,7 @@ pub fn spawn_window_with_options(
 
 fn window_focus_system(
     mouse: Res<ButtonInput<MouseButton>>,
-    windows: Query<&Window>,
+    cursor: Res<CursorPosition>,
     mut app_query: Query<
         (
             Entity,
@@ -292,29 +293,26 @@ fn window_focus_system(
             }
         }
 
-        if target.is_none() {
-            if let Ok(bevy_window) = windows.single() {
-                if let Some(cursor) = bevy_window.physical_cursor_position() {
-                    let mut best: Option<(Entity, i32)> = None;
-                    for (e, app, _, node, transform, vis) in app_query.iter() {
-                        if *vis == Visibility::Hidden {
-                            continue;
-                        }
-                        let Some(local) =
-                            transform.try_inverse().map(|t| t.transform_point2(cursor))
-                        else {
-                            continue;
-                        };
-                        let half = node.size() * 0.5;
-                        if local.x.abs() <= half.x && local.y.abs() <= half.y {
-                            if best.map_or(true, |(_, bz)| app.z > bz) {
-                                best = Some((e, app.z));
-                            }
-                        }
+        if target.is_none() && cursor.active {
+            let cursor_pos = cursor.physical;
+            let mut best: Option<(Entity, i32)> = None;
+            for (e, app, _, node, transform, vis) in app_query.iter() {
+                if *vis == Visibility::Hidden {
+                    continue;
+                }
+                let Some(local) =
+                    transform.try_inverse().map(|t| t.transform_point2(cursor_pos))
+                else {
+                    continue;
+                };
+                let half = node.size() * 0.5;
+                if local.x.abs() <= half.x && local.y.abs() <= half.y {
+                    if best.map_or(true, |(_, bz)| app.z > bz) {
+                        best = Some((e, app.z));
                     }
-                    target = best.map(|(e, _)| e);
                 }
             }
+            target = best.map(|(e, _)| e);
         }
     }
 
@@ -409,7 +407,7 @@ fn find_window_entity(
 
 fn window_drag_start(
     mouse: Res<ButtonInput<MouseButton>>,
-    windows: Query<&Window>,
+    cursor: Res<CursorPosition>,
     title_bars: Query<(&ChildOf, &Interaction), With<TitleBar>>,
     child_of_query: Query<&ChildOf>,
     window_query: Query<Entity, With<AppWindow>>,
@@ -424,12 +422,10 @@ fn window_drag_start(
     if is_dragging.0 {
         return;
     }
-    let Ok(bevy_window) = windows.single() else {
+    if !cursor.active {
         return;
-    };
-    let Some(cursor) = bevy_window.cursor_position() else {
-        return;
-    };
+    }
+    let cursor = cursor.logical;
 
     for (parent, interaction) in title_bars.iter() {
         if *interaction != Interaction::Pressed {
@@ -467,16 +463,15 @@ fn window_drag_start(
 }
 
 fn window_drag_apply(
-    windows: Query<&Window>,
+    cursor: Res<CursorPosition>,
+    area: Res<UiArea>,
     mut drag_query: Query<(Entity, &mut Node, &WindowDrag), With<AppWindow>>,
 ) {
-    let Ok(bevy_window) = windows.single() else {
+    if !cursor.active {
         return;
-    };
-    let Some(cursor) = bevy_window.cursor_position() else {
-        return;
-    };
-    let screen_h = bevy_window.resolution.height();
+    }
+    let cursor = cursor.logical;
+    let screen_h = area.y;
 
     let min_top = TOPBAR_HEIGHT;
     let max_top = (screen_h - DOCK_TOTAL_HEIGHT).max(min_top);

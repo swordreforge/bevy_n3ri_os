@@ -3,6 +3,7 @@ use bevy::input::mouse::MouseWheel;
 use bevy::prelude::*;
 use bevy::ui::ComputedStackIndex;
 
+use crate::cursor::CursorPosition;
 use crate::window::AppWindow;
 
 pub struct ScrollPlugin;
@@ -84,7 +85,7 @@ pub fn spawn_scrollbar(parent: &mut ChildSpawnerCommands, scroll_entity: Entity)
 
 fn scroll_wheel_system(
     mut wheel_evr: MessageReader<MouseWheel>,
-    windows: Query<&Window>,
+    cursor: Res<CursorPosition>,
     mut areas: Query<(
         Entity,
         &mut ScrollableArea,
@@ -108,16 +109,14 @@ fn scroll_wheel_system(
         With<AppWindow>,
     >,
 ) {
-    let Ok(bevy_window) = windows.single() else {
-        return;
-    };
     let delta: f32 = wheel_evr.read().map(|e| e.y).sum();
     if delta == 0.0 {
         return;
     }
-    let Some(cursor) = bevy_window.physical_cursor_position() else {
+    if !cursor.active {
         return;
-    };
+    }
+    let cursor = cursor.physical;
     let target_window = topmost_at_cursor(app_windows.iter().map(
         |(entity, node, stack, transform, visibility)| {
             (
@@ -217,7 +216,7 @@ fn topmost_at_cursor<T>(areas: impl IntoIterator<Item = (T, u32, bool)>) -> Opti
 
 fn scroll_thumb_drag_system(
     mouse: Res<ButtonInput<MouseButton>>,
-    windows: Query<&Window>,
+    cursor: Res<CursorPosition>,
     thumbs: Query<(
         &Interaction,
         &ScrollbarThumb,
@@ -231,12 +230,10 @@ fn scroll_thumb_drag_system(
     if !mouse.pressed(MouseButton::Left) {
         return;
     }
-    let Ok(bevy_window) = windows.single() else {
+    if !cursor.active {
         return;
-    };
-    let Some(cursor) = bevy_window.physical_cursor_position() else {
-        return;
-    };
+    }
+    let cursor = cursor.physical;
 
     for (interaction, thumb, _, _) in thumbs.iter() {
         if *interaction != Interaction::Pressed {

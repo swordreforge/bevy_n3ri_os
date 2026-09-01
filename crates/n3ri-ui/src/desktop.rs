@@ -3,7 +3,8 @@ use bevy::image::{ImageAddressMode, ImageSampler, ImageSamplerDescriptor};
 use bevy::prelude::*;
 use bevy::render::render_resource::AsBindGroup;
 use bevy::shader::ShaderRef;
-use bevy::window::PrimaryWindow;
+
+use crate::cursor::{CursorPosition, UiArea};
 
 #[derive(AsBindGroup, Asset, TypePath, Debug, Clone)]
 pub struct DesktopBackgroundMaterial {
@@ -43,23 +44,19 @@ pub struct DesktopBackground;
 
 fn animate_desktop_background(
     time: Res<Time>,
-    windows: Query<&Window, With<PrimaryWindow>>,
+    cursor: Res<CursorPosition>,
+    area: Res<UiArea>,
     mut materials: ResMut<Assets<DesktopBackgroundMaterial>>,
     nodes: Query<&MaterialNode<DesktopBackgroundMaterial>, With<DesktopBackground>>,
 ) {
-    let mouse_pos = windows
-        .single()
-        .ok()
-        .and_then(|w| {
-            let size = w.size();
-            w.cursor_position().map(|p| {
-                Vec2::new(
-                    (p.x / size.x) * 2.0 - 1.0,
-                    (p.y / size.y) * 2.0 - 1.0,
-                )
-            })
-        })
-        .unwrap_or(Vec2::ZERO);
+    let mouse_pos = if cursor.active && area.x > 0.0 && area.y > 0.0 {
+        Vec2::new(
+            (cursor.logical.x / area.x) * 2.0 - 1.0,
+            (cursor.logical.y / area.y) * 2.0 - 1.0,
+        )
+    } else {
+        Vec2::ZERO
+    };
 
     for m in nodes.iter() {
         if let Some(mut mat) = materials.get_mut(&m.0) {

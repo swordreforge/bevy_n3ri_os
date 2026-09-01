@@ -14,21 +14,41 @@ Bevy 0.19 pseudo-OS desktop environment replicating [os.inori.ai](https://os.ino
 ## Build & Run
 
 ```bash
-cargo run -p n3ri-minimal
+cargo run -p n3ri-minimal            # 窗口模式（默认）
+cargo run -p n3ri-minimal -- --wallpaper   # 壁纸模式（layer-shell 桌面壁纸）
+cargo run -p n3ri-minimal -- --satellite   # 全局指针卫星进程（壁纸模式自动拉起，也可手动调试）
 ```
 
-No other binary targets exist. The only runnable crate is `examples/minimal`.
+壁纸模式限制：无键盘/IME/滚轮直通层（滚轮仅在指针位于壁纸 surface 上时由卫星转发）；
+指针被其他窗口遮挡时卫星 delta 外推视差；需 `input` 组权限（`sudo usermod -aG input $USER` 后重新登录）。
+设置 → 显示效果 → 壁纸模式 开关可互斥切换两种模式（自我重启）。
+
+No other binary targets exist. The only runnable crate is `examples/minimal`（单二进制三模式：默认窗口 / `--wallpaper` / `--satellite`）.
 
 ## Workspace Structure
 
 ```
 Cargo.toml          # workspace root — resolver = "2"
 crates/n3ri-core/   # state machine, events, config — no rendering deps
-crates/n3ri-ui/     # all UI: dock, topbar, window mgmt, apps, shader
-examples/minimal/   # the actual binary — wires core + ui together
+crates/n3ri-ui/     # all UI: dock, topbar, window mgmt, apps, shader, cursor/wallpaper bridge
+crates/n3ri-llm/    # OpenAI 兼容 LLM 客户端
+crates/n3ri-live2d/ # Live2D 桌面宠物
+examples/minimal/   # the actual binary — 窗口/壁纸/卫星三模式入口
 assets/nori/        # extracted from os.inori.ai — fonts, icons, textures, audio
 assets/shaders/     # WGSL shaders (desktop_background.wgsl)
 ```
+
+### 光标与壁纸桥接（n3ri-ui）
+
+- `cursor.rs`：`CursorPosition`（logical/physical/scale/active）与 `UiArea` 资源。**所有交互系统
+  （window/resize/dock/snap/scroll/desktop/focus）只读这两个资源，禁止直接查询主窗**。
+  窗口模式由 `sync_cursor_from_window`（First）同步；壁纸模式由 `wallpaper_bridge` 合并系统写入。
+- `wallpaper_bridge.rs`（仅壁纸模式注册）：layer-shell 指针 + 卫星 delta 合并光标；
+  按钮 diff → `MouseButtonInput` 消息（避免与 `ButtonInput` 每帧 clear 竞态）；
+  `wallpaper_ui_focus_system` 复刻 bevy `ui_focus_system`（原版对 Image 相机直接跳过 Interaction）
+  并 `.after(ui_focus_system)` 覆盖其重置结果。
+- 卫星协议：stdout 行流 `x y`（XQueryPointer 轮询的桌面全局绝对坐标，位置变化才发行，~120Hz）；
+  父进程退出 → stdin EOF → 卫星自杀。触摸板/鼠标通吃；被遮挡时指针坐标依然有效。壁纸模式 v1 无键盘/IME/滚轮。
 
 Commented-out crates (not in workspace): `n3ri-render`, `n3ri-audio`, `n3ri-live2d`, `n3ri-apps`.
 Live2D FFI crates exist in `crates/` but are not workspace members.

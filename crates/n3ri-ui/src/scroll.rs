@@ -303,15 +303,23 @@ fn scroll_sync_system(
             for tc in track_children.iter() {
                 if let Ok(mut tn) = node_set.p1().get_mut(tc) {
                     if max <= 0.0 {
-                        tn.height = Val::Percent(100.0);
-                        tn.top = Val::Percent(0.0);
+                        if tn.height != Val::Percent(100.0) {
+                            tn.height = Val::Percent(100.0);
+                        }
+                        if tn.top != Val::Percent(0.0) {
+                            tn.top = Val::Percent(0.0);
+                        }
                         continue;
                     }
                     let thumb_pct = (viewport_h / content_h * 100.0).clamp(8.0, 100.0);
                     let travel = 100.0 - thumb_pct;
                     let top_pct = (offset / max) * travel;
-                    tn.height = Val::Percent(thumb_pct);
-                    tn.top = Val::Percent(top_pct);
+                    if tn.height != Val::Percent(thumb_pct) {
+                        tn.height = Val::Percent(thumb_pct);
+                    }
+                    if tn.top != Val::Percent(top_pct) {
+                        tn.top = Val::Percent(top_pct);
+                    }
                 }
             }
         }

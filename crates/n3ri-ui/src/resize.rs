@@ -119,7 +119,7 @@ fn edge_to_cursor_icon(edge: ResizeEdge) -> Option<SystemCursorIcon> {
 }
 
 fn resize_hover_cursor(
-    windows: Query<Entity, With<PrimaryWindow>>,
+    windows: Query<(Entity, Option<&CursorIcon>), With<PrimaryWindow>>,
     cursor: Res<CursorPosition>,
     window_query: Query<(Entity, &Node, &Visibility, &AppWindow), With<AppWindow>>,
     is_dragging: Res<IsDragging>,
@@ -129,40 +129,41 @@ fn resize_hover_cursor(
     if is_dragging.0 || resize_state.resizing_window.is_some() {
         return;
     }
-    let Ok(window_entity) = windows.single() else {
+    let Ok((window_entity, current_icon)) = windows.single() else {
         return;
     };
-    if !cursor.active {
-        commands.entity(window_entity).remove::<CursorIcon>();
-        return;
-    }
-    let cursor = cursor.logical;
 
-    let mut candidates: Vec<_> = window_query.iter().collect();
-    candidates.sort_by_key(|(_, _, _, a)| -a.z);
+    let desired: Option<CursorIcon> = if cursor.active {
+        let cursor = cursor.logical;
 
-    let mut detected_edge = ResizeEdge::None;
-    for (_entity, node, visibility, _) in candidates {
-        if *visibility != Visibility::Visible {
-            continue;
-        }
-        let (left, top, width, height) = node_bounds(node);
-        let edge = detect_edge(cursor, left, top, width, height);
-        if edge != ResizeEdge::None {
-            detected_edge = edge;
-            break;
-        }
-    }
+        let mut candidates: Vec<_> = window_query.iter().collect();
+        candidates.sort_by_key(|(_, _, _, a)| -a.z);
 
-    match edge_to_cursor_icon(detected_edge) {
-        Some(icon) => {
-            commands
-                .entity(window_entity)
-                .insert(CursorIcon::System(icon));
+        let mut detected_edge = ResizeEdge::None;
+        for (_entity, node, visibility, _) in candidates {
+            if *visibility != Visibility::Visible {
+                continue;
+            }
+            let (left, top, width, height) = node_bounds(node);
+            let edge = detect_edge(cursor, left, top, width, height);
+            if edge != ResizeEdge::None {
+                detected_edge = edge;
+                break;
+            }
         }
-        None => {
+        edge_to_cursor_icon(detected_edge).map(CursorIcon::System)
+    } else {
+        None
+    };
+
+    match desired {
+        Some(new) if current_icon != Some(&new) => {
+            commands.entity(window_entity).insert(new);
+        }
+        None if current_icon.is_some() => {
             commands.entity(window_entity).remove::<CursorIcon>();
         }
+        _ => {}
     }
 }
 

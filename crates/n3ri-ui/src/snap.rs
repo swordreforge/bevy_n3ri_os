@@ -181,21 +181,50 @@ fn detect_snap_zone(
 fn update_snap_preview(
     mut commands: Commands,
     mut snap_state: ResMut<SnapState>,
-    preview_query: Query<Entity, With<SnapPreview>>,
+    mut preview_query: Query<&mut Node, With<SnapPreview>>,
 ) {
-    if let Some(entity) = snap_state.preview_entity.take() {
-        if preview_query.get(entity).is_ok() {
-            commands.entity(entity).despawn();
-        }
-    }
-
+    // 无吸附区或目标：销毁现有预览(若有)并清空记录，零 target 帧不 spawn
     if snap_state.active_zone == SnapZone::None || snap_state.target.is_none() {
+        if let Some(entity) = snap_state.preview_entity.take() {
+            if preview_query.get(entity).is_ok() {
+                commands.entity(entity).despawn();
+            }
+        }
         return;
     }
 
     let target = snap_state.target.unwrap();
 
-    let entity = commands
+    // 变更驱动复用：target 未变时只读比较、不写 Node(不触发 taffy 重排、不重建实体)
+    match snap_state.preview_entity {
+        Some(entity) => match preview_query.get_mut(entity) {
+            Ok(mut node) => {
+                if node.left != Val::Px(target.left) {
+                    node.left = Val::Px(target.left);
+                }
+                if node.top != Val::Px(target.top) {
+                    node.top = Val::Px(target.top);
+                }
+                if node.width != Val::Px(target.width) {
+                    node.width = Val::Px(target.width);
+                }
+                if node.height != Val::Px(target.height) {
+                    node.height = Val::Px(target.height);
+                }
+            }
+            // 实体已被延迟 despawn 但记录未清(或本帧才被别处 despawn)：重建
+            Err(_) => {
+                snap_state.preview_entity = Some(spawn_preview(&mut commands, target));
+            }
+        },
+        None => {
+            snap_state.preview_entity = Some(spawn_preview(&mut commands, target));
+        }
+    }
+}
+
+fn spawn_preview(commands: &mut Commands, target: SnapTarget) -> Entity {
+    commands
         .spawn((
             SnapPreview,
             Node {
@@ -211,8 +240,7 @@ fn update_snap_preview(
             BorderColor::all(PREVIEW_BORDER),
             GlobalZIndex(-1),
         ))
-        .id();
-    snap_state.preview_entity = Some(entity);
+        .id()
 }
 
 fn apply_snap(

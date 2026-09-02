@@ -429,9 +429,17 @@ fn chat_capsule_animate(
 
     let active_t = progress;
 
+    // 现值比较:Active 稳态下 active_t 恒定,插值目标每帧相同,相同则跳过组件写,
+    // 避免触发无谓的 layout/重绘(参照 chat_bubble_sync 的 bg.0 != target 先例)。
     if let Ok((mut bg, mut border)) = root_q.single_mut() {
-        *bg = BackgroundColor(lerp_color(BG_INACTIVE, BG_ACTIVE, active_t));
-        *border = BorderColor::all(lerp_color(BORDER_INACTIVE, BORDER_ACTIVE, active_t));
+        let bg_target = lerp_color(BG_INACTIVE, BG_ACTIVE, active_t);
+        if bg.0 != bg_target {
+            *bg = BackgroundColor(bg_target);
+        }
+        let border_target = BorderColor::all(lerp_color(BORDER_INACTIVE, BORDER_ACTIVE, active_t));
+        if *border != border_target {
+            *border = border_target;
+        }
     }
 
     if let Ok((mut text, mut color)) = display_q.single_mut() {
@@ -449,31 +457,47 @@ fn chat_capsule_animate(
         } else {
             PLACEHOLDER.to_string()
         };
-        **text = display_text;
+        if **text != display_text {
+            **text = display_text;
+        }
 
         let text_col = if state.composing {
             PREEDIT_COLOR
         } else {
             lerp_color(TEXT_INACTIVE, TEXT_ACTIVE, active_t)
         };
-        *color = TextColor(text_col);
+        if color.0 != text_col {
+            *color = TextColor(text_col);
+        }
     }
 
+    let icon_target = lerp_color(ICON_INACTIVE, ICON_ACTIVE, active_t);
     for mut tc in scan_q.iter_mut() {
-        *tc = TextColor(lerp_color(ICON_INACTIVE, ICON_ACTIVE, active_t));
+        if tc.0 != icon_target {
+            *tc = TextColor(icon_target);
+        }
     }
     for mut tc in arrow_q.iter_mut() {
-        *tc = TextColor(lerp_color(ICON_INACTIVE, ICON_ACTIVE, active_t));
+        if tc.0 != icon_target {
+            *tc = TextColor(icon_target);
+        }
     }
+    let shortcut_text_target =
+        lerp_color(SHORTCUT_TEXT_INACTIVE, SHORTCUT_TEXT_ACTIVE, active_t);
     for mut tc in shortcut_text_q.iter_mut() {
-        *tc = TextColor(lerp_color(SHORTCUT_TEXT_INACTIVE, SHORTCUT_TEXT_ACTIVE, active_t));
+        if tc.0 != shortcut_text_target {
+            *tc = TextColor(shortcut_text_target);
+        }
     }
+    let badge_target = lerp_color(
+        Color::srgba(0.25, 0.28, 0.32, 0.35),
+        Color::srgba(0.70, 0.73, 0.76, 0.20),
+        active_t,
+    );
     for mut badge_bg in shortcut_bg_q.iter_mut() {
-        *badge_bg = BackgroundColor(lerp_color(
-            Color::srgba(0.25, 0.28, 0.32, 0.35),
-            Color::srgba(0.70, 0.73, 0.76, 0.20),
-            active_t,
-        ));
+        if badge_bg.0 != badge_target {
+            *badge_bg = BackgroundColor(badge_target);
+        }
     }
 }
 

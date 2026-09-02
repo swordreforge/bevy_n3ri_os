@@ -7,6 +7,7 @@ use bevy::window::Ime;
 use crate::input_focus::{TextInputFocus, TextInputOwner};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Instant;
 
 use crate::font::N3riFonts;
 use crate::scroll::{ScrollableArea, ScrollContent};
@@ -69,6 +70,7 @@ struct SettingsState {
     mem: f32,
     gpu: Option<f32>,
     prev_cpu: (u64, u64),
+    prev_gpu_rc6: Option<(u64, Instant)>,
     llm_form: [String; 3],
     llm_focus: Option<usize>,
     llm_test: Arc<Mutex<LlmTest>>,
@@ -86,6 +88,7 @@ impl Default for SettingsState {
             mem: 0.0,
             gpu: None,
             prev_cpu: (0, 0),
+            prev_gpu_rc6: None,
             llm_form: {
                 let cfg = n3ri_llm::load_config();
                 [cfg.base_url, cfg.model, cfg.api_key]
@@ -1034,7 +1037,8 @@ fn read_mem_percent() -> Option<f32> {
     Some(((total - available) as f32 / total as f32) * 100.0)
 }
 
-fn read_gpu_percent() -> Option<f32> {
+/// amdgpu 专有接口 gpu_busy_percent（0-100，直接可用；Intel i915 无此文件）。
+fn read_amd_gpu_busy() -> Option<f32> {
     for entry in std::fs::read_dir("/sys/class/drm").ok()? {
         let path = entry.ok()?.path().join("device/gpu_busy_percent");
         if let Ok(text) = std::fs::read_to_string(&path) {
@@ -1042,6 +1046,40 @@ fn read_gpu_percent() -> Option<f32> {
         }
     }
     None
+}
+
+/// Intel i915 替代方案：RC6 省电驻留累计毫秒（主渲染 GT=gt0），单调递增，需差分。
+fn read_intel_rc6_ms() -> Option<u64> {
+    for entry in std::fs::read_dir("/sys/class/drm").ok()? {
+        let gt_path = entry.ok()?.path().join("gt/gt0/rc6_residency_ms");
+        if let Ok(text) = std::fs::read_to_string(&gt_path) {
+            return text.trim().parse().ok();
+        }
+    }
+    None
+}
+
+fn read_gpu_percent(prev: &mut Option<(u64, Instant)>) -> Option<f32> {
+    if let Some(busy) = read_amd_gpu_busy() {
+        return Some(busy);
+    }
+    // busy% = 100 * (1 - Δrc6_ms / Δwall_ms)，首次采样仅建基线返回 None
+    let rc6 = read_intel_rc6_ms()?;
+    let now = Instant::now();
+    let pct = match *prev {
+        Some((prev_rc6, prev_t)) => {
+            let d_rc6 = rc6.saturating_sub(prev_rc6);
+            let d_wall_ms = now.duration_since(prev_t).as_secs_f64() * 1000.0;
+            if d_wall_ms > 0.0 {
+                Some((100.0 * (1.0 - d_rc6 as f64 / d_wall_ms)).clamp(0.0, 100.0) as f32)
+            } else {
+                None
+            }
+        }
+        None => None,
+    };
+    *prev = Some((rc6, now));
+    pct
 }
 
 fn settings_nav(
@@ -1228,7 +1266,7 @@ fn settings_poll(
     if let Some(mem) = read_mem_percent() {
         state.mem = mem;
     }
-    state.gpu = read_gpu_percent();
+    state.gpu = read_gpu_percent(&mut state.prev_gpu_rc6);
 
     let done = match &*state.ping.lock().unwrap() {
         PingState::Done(ok, ms) => Some((*ok, *ms)),

@@ -1,4 +1,5 @@
 use bevy::audio::GlobalVolume;
+use bevy::log::DEFAULT_FILTER;
 use bevy::prelude::*;
 use bevy::ui::IsDefaultUiCamera;
 use bevy::window::PrimaryWindow;
@@ -91,6 +92,12 @@ fn run_windowed() {
 
     app.add_plugins(
         DefaultPlugins
+            .set(bevy::log::LogPlugin {
+                // bevy_text 用 icu_segmenter 对 CJK 断词，缺少复杂脚本模型时对每段
+                // 中文都打 WARN（No segmentation model...），此处屏蔽该无意义噪声
+                filter: format!("{},icu_provider=off", DEFAULT_FILTER),
+                ..default()
+            })
             .set(WindowPlugin {
                 primary_window: Some(Window {
                     title: "n3ri_os".into(),
@@ -137,6 +144,10 @@ fn run_wallpaper() {
 
     app.add_plugins(
         DefaultPlugins
+            .set(bevy::log::LogPlugin {
+                filter: format!("{},icu_provider=off", DEFAULT_FILTER),
+                ..default()
+            })
             .set(WindowPlugin {
                 primary_window: None,
                 exit_condition: bevy::window::ExitCondition::DontExit,

@@ -24,10 +24,11 @@ const BAD_RED: Color = Color::srgb(0.9, 0.35, 0.35);
 const BUTTON_BORDER_COLOR: Color = Color::srgba(0.55, 0.65, 0.75, 0.5);
 
 const QUALITY_OPTIONS: [&str; 3] = ["极限性能", "平衡", "省电"];
-const TAB_LABELS: [(&str, &str); 5] = [
+const TAB_LABELS: [(&str, &str); 6] = [
     ("sound", "声音"),
     ("display", "显示效果"),
     ("network", "网络"),
+    ("touch", "触控"),
     ("system", "系统"),
     ("model", "模型"),
 ];
@@ -37,14 +38,16 @@ enum SettingsTab {
     Sound,
     Display,
     Network,
+    Touch,
     System,
     Model,
 }
 
-const TAB_ORDER: [SettingsTab; 5] = [
+const TAB_ORDER: [SettingsTab; 6] = [
     SettingsTab::Sound,
     SettingsTab::Display,
     SettingsTab::Network,
+    SettingsTab::Touch,
     SettingsTab::System,
     SettingsTab::Model,
 ];
@@ -95,9 +98,9 @@ impl Default for SettingsState {
 
 #[derive(Resource, Default)]
 struct SettingsEntities {
-    pages: [Option<Entity>; 5],
-    nav_bg: [Option<Entity>; 5],
-    nav_text: [Option<Entity>; 5],
+    pages: [Option<Entity>; 6],
+    nav_bg: [Option<Entity>; 6],
+    nav_text: [Option<Entity>; 6],
     fill: [Option<Entity>; 4],
     knob: [Option<Entity>; 4],
     pct: [Option<Entity>; 4],
@@ -112,6 +115,8 @@ struct SettingsEntities {
     bar_pct: [Option<Entity>; 3],
     wallpaper_toggle_bg: Option<Entity>,
     wallpaper_toggle_knob: Option<Entity>,
+    natural_scroll_toggle_bg: Option<Entity>,
+    natural_scroll_toggle_knob: Option<Entity>,
 }
 
 #[derive(Component)]
@@ -128,6 +133,9 @@ struct SettingsToggle(u8);
 
 #[derive(Component)]
 struct WallpaperToggle;
+
+#[derive(Component)]
+struct NaturalScrollToggle;
 
 #[derive(Component)]
 struct QualityButton;
@@ -172,6 +180,7 @@ impl Plugin for SettingsPlugin {
                     settings_nav,
                     settings_toggle_click,
                     wallpaper_toggle_click,
+                    natural_scroll_toggle_click,
                     settings_slider_drag,
                     settings_quality_click,
                     settings_ping_click,
@@ -256,8 +265,10 @@ pub fn spawn_settings_window(parent: &mut ChildSpawnerCommands, fonts: &N3riFont
                         ents.pages[1] =
                             Some(spawn_display_page(content, fonts, &settings, &mut ents));
                         ents.pages[2] = Some(spawn_network_page(content, fonts, &mut ents));
-                        ents.pages[3] = Some(spawn_system_page(content, fonts, &mut ents));
-                        ents.pages[4] =
+                        ents.pages[3] =
+                            Some(spawn_touch_page(content, fonts, &settings, &mut ents));
+                        ents.pages[4] = Some(spawn_system_page(content, fonts, &mut ents));
+                        ents.pages[5] =
                             Some(spawn_model_page(content, fonts, &mut ents, &mut state));
                         });
                     });
@@ -637,6 +648,97 @@ fn spawn_display_page(
     page_e
 }
 
+fn spawn_natural_scroll_toggle(parent: &mut ChildSpawnerCommands, on: bool) -> (Entity, Entity) {
+    let bg = parent
+        .spawn((
+            Button,
+            NaturalScrollToggle,
+            Node {
+                width: Val::Px(40.0),
+                height: Val::Px(20.0),
+                border_radius: BorderRadius::all(Val::Px(10.0)),
+                ..default()
+            },
+            BackgroundColor(if on { ACCENT } else { TOGGLE_OFF }),
+        ))
+        .id();
+
+    let mut knob_e = Entity::PLACEHOLDER;
+    parent.commands().entity(bg).with_children(|t| {
+        knob_e = t
+            .spawn((
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: Val::Px(if on { 22.0 } else { 2.0 }),
+                    top: Val::Px(2.0),
+                    width: Val::Px(16.0),
+                    height: Val::Px(16.0),
+                    border_radius: BorderRadius::all(Val::Px(8.0)),
+                    ..default()
+                },
+                BackgroundColor(Color::WHITE),
+            ))
+            .id();
+    });
+
+    (bg, knob_e)
+}
+
+fn spawn_touch_page(
+    parent: &mut ChildSpawnerCommands,
+    fonts: &N3riFonts,
+    settings: &UserSettings,
+    ents: &mut SettingsEntities,
+) -> Entity {
+    let page_e = parent
+        .spawn((
+            SettingsPage,
+            Node {
+                width: Val::Percent(100.0),
+                flex_direction: FlexDirection::Column,
+                row_gap: Val::Px(16.0),
+                ..default()
+            },
+        ))
+        .id();
+
+    parent.commands().entity(page_e).with_children(|page| {
+        page_header(page, fonts, "触控", "触摸板滚动方向");
+
+        page.spawn(Node {
+            width: Val::Px(280.0),
+            height: Val::Px(44.0),
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::SpaceBetween,
+            padding: UiRect::all(Val::Px(12.0)),
+            border_radius: BorderRadius::all(Val::Px(8.0)),
+            border: UiRect::all(Val::Px(1.0)),
+            ..default()
+        })
+        .with_children(|row| {
+            row.spawn((
+                Text::new("自然滚动"),
+                TextFont {
+                    font: FontSource::Handle(fonts.default.clone()),
+                    font_size: FontSize::Px(14.0),
+                    ..default()
+                },
+                TextColor(TEXT_MAIN),
+            ));
+            row.spawn(Node {
+                width: Val::Px(60.0),
+                height: Val::Px(1.0),
+                ..default()
+            });
+            let (bg, knob) = spawn_natural_scroll_toggle(row, settings.natural_scroll);
+            ents.natural_scroll_toggle_bg = Some(bg);
+            ents.natural_scroll_toggle_knob = Some(knob);
+        });
+    });
+
+    page_e
+}
+
 fn spawn_network_page(
     parent: &mut ChildSpawnerCommands,
     fonts: &N3riFonts,
@@ -1005,6 +1107,23 @@ fn relaunch_into_mode(wallpaper: bool) {
     let _ = command.spawn();
 }
 
+/// 自然滚动开关：翻转后保存，立即生效（壁纸模式注入路径每帧读取该值）。
+fn natural_scroll_toggle_click(
+    mouse: Res<ButtonInput<MouseButton>>,
+    toggle_query: Query<&Interaction, With<NaturalScrollToggle>>,
+    mut settings: ResMut<UserSettings>,
+) {
+    if !mouse.just_pressed(MouseButton::Left) {
+        return;
+    }
+    for interaction in toggle_query.iter() {
+        if *interaction == Interaction::Pressed {
+            settings.natural_scroll = !settings.natural_scroll;
+            settings.save();
+        }
+    }
+}
+
 fn settings_quality_click(
     mouse: Res<ButtonInput<MouseButton>>,
     quality_query: Query<&Interaction, With<QualityButton>>,
@@ -1221,6 +1340,20 @@ fn settings_sync_ui(
     if let Some(knob_e) = ents.wallpaper_toggle_knob {
         if let Ok((mut node, _)) = node_bg_query.get_mut(knob_e) {
             set_px_left(&mut node, if settings.wallpaper_enabled { 22.0 } else { 2.0 });
+        }
+    }
+
+    if let Some(bg_e) = ents.natural_scroll_toggle_bg {
+        if let Ok((_, mut bg)) = node_bg_query.get_mut(bg_e) {
+            let target = if settings.natural_scroll { ACCENT } else { TOGGLE_OFF };
+            if bg.0 != target {
+                bg.0 = target;
+            }
+        }
+    }
+    if let Some(knob_e) = ents.natural_scroll_toggle_knob {
+        if let Ok((mut node, _)) = node_bg_query.get_mut(knob_e) {
+            set_px_left(&mut node, if settings.natural_scroll { 22.0 } else { 2.0 });
         }
     }
 

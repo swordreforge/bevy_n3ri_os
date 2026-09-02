@@ -29,6 +29,7 @@ use bevy_live_wallpaper::{PointerSample, WallpaperPointerState, WallpaperSurface
 
 use crate::cursor::{CursorPosition, UiArea};
 use crate::dock::DockIcon;
+use n3ri_core::config::UserSettings;
 
 /// 卫星进程上行样本：指针绝对位置（XQueryPointer，X 屏物理坐标）/ X 屏物理尺寸（开机首行）/
 /// 滚轮增量（XI2 raw 按钮 4/5/6/7 合并，仅 press 计一次）。
@@ -300,12 +301,19 @@ fn inject_mouse_buttons(
 /// XI2 raw 事件增量（`frame.scroll`）。指针位于 surface 上时写成 `MouseWheel`
 /// 消息（与按钮注入同门控），由 scroll_wheel_system / 终端滚动消费。窗口字段用
 /// PLACEHOLDER——消费方只读 x/y，且壁纸模式无真实窗口实体。
+/// 自然滚动（设置 → 触控）只反转触摸板轴（vendor 路径），卫星真实鼠标滚轮保持传统方向。
 fn inject_mouse_wheel(
     mut pointer: ResMut<WallpaperPointerState>,
     frame: Res<SatelliteFrame>,
+    settings: Res<UserSettings>,
     mut events: MessageWriter<MouseWheel>,
 ) {
-    let scroll = pointer.scroll + frame.scroll;
+    let touch_scroll = if settings.natural_scroll {
+        -pointer.scroll
+    } else {
+        pointer.scroll
+    };
+    let scroll = touch_scroll + frame.scroll;
     pointer.scroll = Vec2::ZERO;
     if pointer.last.is_none() || scroll == Vec2::ZERO {
         if scroll != Vec2::ZERO {
@@ -317,7 +325,7 @@ fn inject_mouse_wheel(
         }
         return;
     }
-    eprintln!("[bridge] inject wheel: {:?}", scroll);
+    eprintln!("[bridge] inject wheel: {:?} (natural={})", scroll, settings.natural_scroll);
     events.write(MouseWheel {
         unit: MouseScrollUnit::Line,
         x: scroll.x,

@@ -40,6 +40,13 @@ pub struct UserSettings {
     /// 壁纸模式开关（设置 → 显示效果）；切换时主程序自我重启进入另一模式
     #[serde(default)]
     pub wallpaper_enabled: bool,
+    /// 自然滚动开关（设置 → 触控）；开启时壁纸模式触摸板滚动方向反转（内容跟随手指）
+    #[serde(default = "default_true")]
+    pub natural_scroll: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for UserSettings {
@@ -49,6 +56,7 @@ impl Default for UserSettings {
             toggles: [true, true, true, true],
             quality_idx: 0,
             wallpaper_enabled: false,
+            natural_scroll: true,
         }
     }
 }

@@ -349,6 +349,7 @@ pub fn load_and_setup_pet(world: &mut World) {
         ));
     if let Some(mut img) = world.resource_mut::<Assets<Image>>().get_mut(&pet_image_h) {
         img.sampler = ImageSampler::linear();
+        rt_drop_cpu_data(&mut img);
     }
 
     let white_h = world.resource_mut::<Assets<Image>>().add(Image::new_fill(
@@ -392,6 +393,7 @@ pub fn load_and_setup_pet(world: &mut World) {
         ));
     if let Some(mut img) = world.resource_mut::<Assets<Image>>().get_mut(&head_image_h) {
         img.sampler = ImageSampler::linear();
+        rt_drop_cpu_data(&mut img);
     }
 
     let head_camera = world.spawn((
@@ -540,6 +542,7 @@ pub fn load_and_setup_pet(world: &mut World) {
             ));
         if let Some(mut img) = world.resource_mut::<Assets<Image>>().get_mut(&rtt_h) {
             img.sampler = ImageSampler::linear();
+            rt_drop_cpu_data(&mut img);
         }
         group_rtts.push(rtt_h.clone());
 
@@ -633,6 +636,32 @@ pub fn load_and_setup_pet(world: &mut World) {
     world.insert_non_send(pet);
 }
 
+/// 把 RTT Image 重置为纯 GPU 端 render target：清空 CPU data、关闭 resize 拷贝。
+///
+/// `Image::new_target_texture` 强制带全零 CPU data 且 `copy_on_resize = true`。
+/// 对 Live2D RTT（pet/head/mask，全部被各自 camera 每帧 clear + 重画）CPU data
+/// 永远不被读取，保留它会在每次 resize 时：
+///
+///   1. 主线程 `data.resize(新尺寸, 0)` memset —— 多张全尺寸零填充卡顿；
+///   2. GPU `prepare_asset` 走 `create_texture_with_data` 全量上传零数据。
+///
+/// 清空 data 后 bevy 只做纯 GPU `create_texture`（无上传无拷贝），卡顿消除。
+fn rt_drop_cpu_data(img: &mut Image) {
+    img.data = None;
+    img.copy_on_resize = false;
+}
+
+/// RTT resize：置空 CPU data 后仅更新 descriptor（见 [`rt_drop_cpu_data`]）。
+fn rt_resize(img: &mut Image, w: u32, h: u32) {
+    img.data = None;
+    img.copy_on_resize = false;
+    img.texture_descriptor.size = Extent3d {
+        width: w,
+        height: h,
+        depth_or_array_layers: 1,
+    };
+}
+
 // ── per-frame systems ──
 
 /// 运行时重适配：目标区域变化时同步 RTT 尺寸、相机、PetMapping、材质 viewport、
@@ -679,11 +708,7 @@ pub(crate) fn refit_pet_view(
     *grow_timer = 0.0;
 
     if let Some(mut img) = images.get_mut(&rig.pet_image) {
-        img.resize(Extent3d {
-            width: w,
-            height: h,
-            depth_or_array_layers: 1,
-        });
+        rt_resize(&mut img, w, h);
     }
     *mapping = PetMapping::compute(rig.bbox, w, h);
 
@@ -705,11 +730,7 @@ pub(crate) fn refit_pet_view(
     if let Some(render_rig) = render_rig.as_ref() {
         for group in &render_rig._mask_groups {
             if let Some(mut img) = images.get_mut(&group._rtt_handle) {
-                img.resize(Extent3d {
-                    width: w,
-                    height: h,
-                    depth_or_array_layers: 1,
-                });
+                rt_resize(&mut img, w, h);
             }
             if let Ok((mut tf, _)) = cameras.get_mut(group._camera_entity) {
                 tf.translation = Vec3::new(w as f32 * 0.5, h as f32 * 0.5, 1000.0);

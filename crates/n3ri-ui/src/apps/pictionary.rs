@@ -13,6 +13,7 @@ use bevy::text::{FontSource, FontSize};
 use bevy::window::Ime;
 use std::collections::HashMap;
 
+use crate::cursor::CursorPosition;
 use crate::font::N3riFonts;
 use crate::input_focus::{TextInputFocus, TextInputOwner};
 use crate::scroll::{ScrollableArea, ScrollContent};
@@ -1399,7 +1400,7 @@ fn pic_draw(
     mouse: Res<ButtonInput<MouseButton>>,
     is_dragging: Res<crate::dock::IsDragging>,
     focused: Res<crate::topbar::FocusedTitle>,
-    windows: Query<&Window>,
+    cursor: Res<CursorPosition>,
     canvas_q: Query<(&ComputedNode, &UiGlobalTransform), With<PicCanvas>>,
     canvas: Res<PicCanvasTex>,
     mut game: ResMut<PictionaryGame>,
@@ -1416,9 +1417,10 @@ fn pic_draw(
     let Ok((node, transform)) = canvas_q.single() else {
         return;
     };
-    let Some(cursor) = windows.single().ok().and_then(Window::physical_cursor_position) else {
+    if !cursor.active {
         return;
-    };
+    }
+    let cursor = cursor.physical;
     let Some(inverse) = transform.try_inverse() else {
         return;
     };

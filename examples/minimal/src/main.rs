@@ -285,7 +285,6 @@ fn spawn_satellite_process(mut commands: Commands) {
                             parts.next().and_then(|v| v.parse::<f32>().ok()),
                         ) {
                             (Some(dx), Some(dy)) => {
-                                eprintln!("[reader] w {dx} {dy}");
                                 Some(
                                     n3ri_ui::wallpaper_bridge::SatelliteSample::Scroll(Vec2::new(dx, dy)),
                                 )
@@ -383,30 +382,15 @@ fn run_satellite() -> i32 {
             while let Ok(Some(event)) = conn.poll_for_event() {
                 let detail = match event {
                     X11Event::ButtonPress(ev) => Some(u32::from(ev.detail)),
-                    X11Event::ButtonRelease(ev) => {
-                        eprintln!("[卫星] button RELEASE detail={}", ev.detail);
-                        None
-                    }
-                    X11Event::MotionNotify(ev) => {
-                        eprintln!("[卫星] motion ({}, {})", ev.root_x, ev.root_y);
-                        None
-                    }
-                    X11Event::EnterNotify(ev) => {
-                        eprintln!("[卫星] enter (mode={:?})", ev.mode);
-                        None
-                    }
-                    X11Event::LeaveNotify(ev) => {
-                        eprintln!("[卫星] leave (mode={:?})", ev.mode);
-                        None
-                    }
+                    X11Event::ButtonRelease(_) => None,
+                    X11Event::MotionNotify(_) => None,
+                    X11Event::EnterNotify(_) => None,
+                    X11Event::LeaveNotify(_) => None,
                     other => {
                         eprintln!("[卫星] OTHER EVENT: {:?}", other);
                         None
                     }
                 };
-                if let Some(d) = detail {
-                    eprintln!("[卫星] button press detail={d}");
-                }
                 match detail {
                     Some(4) => wheel.1 += 1.0,
                     Some(5) => wheel.1 -= 1.0,
@@ -416,7 +400,6 @@ fn run_satellite() -> i32 {
                 }
             }
             if wheel.0 != 0.0 || wheel.1 != 0.0 {
-                eprintln!("[卫星] emit w {} {}", wheel.0, wheel.1);
                 if let Ok(mut out) = stdout.lock() {
                     let _ = writeln!(out, "w {} {}", wheel.0, wheel.1);
                     let _ = out.flush();

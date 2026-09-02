@@ -109,23 +109,11 @@ fn scroll_wheel_system(
         With<AppWindow>,
     >,
 ) {
-    let mut raw = Vec::new();
-    for e in wheel_evr.read() {
-        raw.push((e.window, e.y, e.x));
-    }
-    let delta: f32 = raw.iter().map(|(_, y, _)| y).sum();
-    if !raw.is_empty() {
-        eprintln!(
-            "[scroll] RAW {:?} ({} msgs, sum_y={delta})",
-            raw,
-            raw.len()
-        );
-    }
+    let delta: f32 = wheel_evr.read().map(|e| e.y).sum();
     if delta == 0.0 {
         return;
     }
     if !cursor.active {
-        eprintln!("[scroll] delta={delta} SKIP: cursor inactive");
         return;
     }
     let cursor = cursor.physical;
@@ -149,10 +137,6 @@ fn scroll_wheel_system(
             )
         },
     ));
-    eprintln!(
-        "[scroll] delta={delta} target_window={:?} target_area={:?}",
-        target_window, target_area
-    );
 
     for (entity, mut area, node, _, transform, _, children) in areas.iter_mut() {
         if Some(entity) != target_area {
@@ -172,18 +156,11 @@ fn scroll_wheel_system(
             .unwrap_or(0.0);
         let viewport_h = node.size().y;
         let max = (content_h - viewport_h).max(0.0);
-        eprintln!(
-            "[scroll] area={entity:?} content_h={content_h:.0} viewport_h={viewport_h:.0} max={max:.0}"
-        );
         if max <= 0.0 {
             continue;
         }
 
         area.scroll_offset = (area.scroll_offset - delta * WHEEL_SPEED).clamp(0.0, max);
-        eprintln!(
-            "[scroll] SCROLLED offset={:.0} (content_h={content_h:.0} viewport={viewport_h:.0})",
-            area.scroll_offset
-        );
 
         for child in children.iter() {
             if let Ok(mut n) = content_nodes.get_mut(child) {

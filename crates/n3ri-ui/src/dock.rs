@@ -1,5 +1,6 @@
 use bevy::prelude::*;
 use bevy::ecs::relationship::Relationship;
+use std::collections::HashMap;
 
 use crate::cursor::{CursorPosition, UiArea};
 use crate::font::N3riFonts;
@@ -238,11 +239,26 @@ pub fn spawn_dock(parent: &mut ChildSpawnerCommands, asset_server: &AssetServer,
         });
 }
 
+fn set_width_if_changed(
+    entity: Entity,
+    node: &mut Node,
+    last_widths: &mut HashMap<Entity, f32>,
+    target: f32,
+) {
+    let last = last_widths.entry(entity).or_insert(ICON_BASE_SIZE);
+    if *last != target {
+        node.width = Val::Px(target);
+        node.height = Val::Px(target + 10.0);
+        *last = target;
+    }
+}
+
 fn dock_magnification(
     cursor: Res<CursorPosition>,
     area: Res<UiArea>,
     is_dragging: Res<IsDragging>,
-    mut icon_query: Query<(&DockIcon, &mut Node), Without<crate::scroll::ScrollbarThumb>>,
+    mut icon_query: Query<(Entity, &DockIcon, &mut Node), Without<crate::scroll::ScrollbarThumb>>,
+    mut last_widths: Local<HashMap<Entity, f32>>,
 ) {
     if is_dragging.0 {
         return;
@@ -257,9 +273,8 @@ fn dock_magnification(
     let dock_start_x = (screen_width - total_icons_width) / 2.0;
 
     if !cursor.active {
-        for (_, mut node) in icon_query.iter_mut() {
-            node.width = Val::Px(ICON_BASE_SIZE);
-            node.height = Val::Px(ICON_BASE_SIZE + 10.0);
+        for (entity, _, mut node) in icon_query.iter_mut() {
+            set_width_if_changed(entity, &mut node, &mut last_widths, ICON_BASE_SIZE);
         }
         return;
     }
@@ -267,14 +282,13 @@ fn dock_magnification(
 
     let y_distance = (cursor.y - dock_bottom_y).abs();
     if y_distance > MAGNETIC_RANGE {
-        for (_, mut node) in icon_query.iter_mut() {
-            node.width = Val::Px(ICON_BASE_SIZE);
-            node.height = Val::Px(ICON_BASE_SIZE + 10.0);
+        for (entity, _, mut node) in icon_query.iter_mut() {
+            set_width_if_changed(entity, &mut node, &mut last_widths, ICON_BASE_SIZE);
         }
         return;
     }
 
-    for (icon, mut node) in icon_query.iter_mut() {
+    for (entity, icon, mut node) in icon_query.iter_mut() {
         let icon_center_x =
             dock_start_x + icon.index as f32 * ICON_TOTAL + ICON_BASE_SIZE / 2.0;
 
@@ -287,14 +301,13 @@ fn dock_magnification(
             ICON_BASE_SIZE
         };
 
-        node.width = Val::Px(scale);
-        node.height = Val::Px(scale + 10.0);
+        set_width_if_changed(entity, &mut node, &mut last_widths, scale);
     }
 }
 
 fn dock_update(
     mouse: Res<ButtonInput<MouseButton>>,
-    icon_query: Query<(&DockIcon, &Interaction, &Children)>,
+    icon_query: Query<(Entity, &DockIcon, &Interaction, &Children)>,
     mut window_query: Query<(Entity, &AppWindow, &mut AppVisible)>,
     dock_query: Query<&ChildOf, With<Dock>>,
     mut indicator_query: Query<&mut Visibility, With<RunningIndicator>>,
@@ -302,9 +315,10 @@ fn dock_update(
     fonts: Res<N3riFonts>,
     asset_server: Res<AssetServer>,
     mut commands: Commands,
+    mut last_running: Local<HashMap<Entity, bool>>,
 ) {
     if mouse.just_pressed(MouseButton::Left) {
-        for (icon, interaction, _) in icon_query.iter() {
+        for (_, icon, interaction, _) in icon_query.iter() {
             if *interaction != Interaction::Pressed {
                 continue;
             }
@@ -405,10 +419,15 @@ fn dock_update(
         }
     }
 
-    for (icon, _, children) in icon_query.iter() {
+    for (entity, icon, _, children) in icon_query.iter() {
         let is_running = window_query.iter().any(|(_, w, vis)| {
             w.app_id == icon.app_name && vis.0
         });
+
+        if last_running.get(&entity).copied() == Some(is_running) {
+            continue;
+        }
+        last_running.insert(entity, is_running);
 
         let target = if is_running {
             icon.icon_a.clone()

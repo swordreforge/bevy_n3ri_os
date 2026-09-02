@@ -925,11 +925,15 @@ fn chat_bubble_sync(
             {
                 let slot = bubble.0;
                 let visible = slot >= offset && slot - offset < n;
-                *vis = if visible {
+                let new_vis = if visible {
                     Visibility::Inherited
                 } else {
                     Visibility::Hidden
                 };
+                // 仅状态翻转时写:可见↔隐藏必须落到组件,其余帧跳过
+                if *vis != new_vis {
+                    *vis = new_vis;
+                }
                 let mut alpha = 1.0;
                 let mut ty = 0.0;
                 if visible {
@@ -956,9 +960,18 @@ fn chat_bubble_sync(
                     }
                     None => 1.0,
                 };
-                tr.translation = Val2::px(0.0, ty);
-                tr.scale = Vec2::splat(s);
-                *bg = BackgroundColor(BUBBLE_BG.with_alpha(alpha));
+                let target_translation = Val2::px(0.0, ty);
+                if tr.translation != target_translation {
+                    tr.translation = target_translation;
+                }
+                let target_scale = Vec2::splat(s);
+                if tr.scale != target_scale {
+                    tr.scale = target_scale;
+                }
+                let target_bg = BUBBLE_BG.with_alpha(alpha);
+                if bg.0 != target_bg {
+                    *bg = BackgroundColor(target_bg);
+                }
                 last_texts[slot] = if visible {
                     g.shown
                         .get(slot - offset)
@@ -983,6 +996,9 @@ fn chat_bubble_sync(
         if **text != target {
             **text = target;
         }
-        *color = TextColor(BUBBLE_TEXT.with_alpha(alpha));
+        let target_color = BUBBLE_TEXT.with_alpha(alpha);
+        if color.0 != target_color {
+            *color = TextColor(target_color);
+        }
     }
 }

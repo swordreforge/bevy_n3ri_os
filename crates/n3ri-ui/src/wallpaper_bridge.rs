@@ -464,7 +464,10 @@ fn wallpaper_ui_focus_system(
         }
     }
 
-    let mut iter = node_query.iter_many_mut(hovered_nodes.iter());
+    // 复用已推进的 hovered_iter 只重置 Block 捕获点下方的剩余节点。
+    // 勿改成 hovered_nodes.iter()（从头重来）——会把刚设成 Hovered 的顶层节点当场抹回
+    // None，悬停类交互（tooltip 等）将永久失效。bevy 原版语义同此。
+    let mut iter = node_query.iter_many_mut(hovered_iter);
     while let Some(node) = iter.fetch_next() {
         if let Some(mut interaction) = node.interaction {
             if *interaction != Interaction::Pressed {

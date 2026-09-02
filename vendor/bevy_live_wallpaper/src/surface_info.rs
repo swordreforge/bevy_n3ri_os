@@ -5,12 +5,28 @@ use bevy::prelude::*;
 /// On Wayland, this is derived from layer-surface configure events and output
 /// logical positions (xdg-output / wl_output). On other platforms it currently
 /// stays at the default value unless implemented.
-#[derive(Resource, Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Resource, Clone, Copy, Debug, PartialEq)]
 pub struct WallpaperSurfaceInfo {
     /// Logical top-left of the wallpaper area (e.g., min x/y across outputs).
     pub offset_position: Vec2,
     /// Logical width/height of the wallpaper area.
     pub size: Vec2,
+    /// UI render-target scale factor applied to the wallpaper image
+    /// (logical × scale = buffer pixels). Matches the camera's
+    /// `ImageRenderTarget.scale_factor`, so UI hit-testing must feed
+    /// `logical × scale` coordinates.
+    pub scale: f32,
+}
+
+impl Default for WallpaperSurfaceInfo {
+    fn default() -> Self {
+        Self {
+            offset_position: Vec2::ZERO,
+            size: Vec2::ZERO,
+            // No fractional scaling → UI coordinates equal buffer pixels.
+            scale: 1.0,
+        }
+    }
 }
 
 impl WallpaperSurfaceInfo {

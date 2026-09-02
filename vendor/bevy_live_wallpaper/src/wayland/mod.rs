@@ -14,7 +14,11 @@ use wayland_client::{
         wl_surface,
     },
 };
+use wayland_protocols::wp::fractional_scale::v1::client::{
+    wp_fractional_scale_manager_v1, wp_fractional_scale_v1,
+};
 use wayland_protocols::wp::text_input::zv3::client::{zwp_text_input_manager_v3, zwp_text_input_v3};
+use wayland_protocols::wp::viewporter::client::{wp_viewport, wp_viewporter};
 use wayland_protocols::xdg::xdg_output::zv1::client::{zxdg_output_manager_v1, zxdg_output_v1};
 use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1, zwlr_layer_surface_v1};
 
@@ -39,6 +43,8 @@ pub(crate) struct WaylandAppState {
     pub display: wl_display::WlDisplay,
     pub compositor: Option<(wl_compositor::WlCompositor, u32)>,
     pub layer_shell: Option<(zwlr_layer_shell_v1::ZwlrLayerShellV1, u32)>,
+    pub viewporter: Option<(wp_viewporter::WpViewporter, u32)>,
+    pub fractional_scale_manager: Option<(wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1, u32)>,
     pub seats: HashMap<u32, wl_seat::WlSeat>,
     pub pointers: HashMap<u32, wl_pointer::WlPointer>,
     pub keyboards: HashMap<u32, wl_keyboard::WlKeyboard>,
@@ -59,6 +65,12 @@ pub(crate) struct WaylandAppState {
     pub output_order: Vec<u32>,
     pub surfaces: HashMap<u32, OutputSurface>,
     pub surface_to_output: HashMap<u32, u32>,
+    /// Preferred fractional scale numerator (denominator fixed at 120) per output,
+    /// from `wp_fractional_scale_v1.preferred_scale`.
+    pub output_fractional_scale: HashMap<u32, u32>,
+    /// Preferred integer buffer scale per output (fallback when fractional is absent),
+    /// from `wl_surface.preferred_buffer_scale`.
+    pub output_integer_scale: HashMap<u32, u32>,
     pub xdg_output_manager: Option<zxdg_output_manager_v1::ZxdgOutputManagerV1>,
     pub xdg_outputs: HashMap<u32, zxdg_output_v1::ZxdgOutputV1>,
 }
@@ -66,6 +78,12 @@ pub(crate) struct WaylandAppState {
 pub(crate) struct OutputSurface {
     pub surface: wl_surface::WlSurface,
     pub layer_surface: zwlr_layer_surface_v1::ZwlrLayerSurfaceV1,
+    /// `wp_viewport` add-on for this surface (fractional scale support), if the
+    /// compositor advertises `wp_viewporter`.
+    pub viewport: Option<wp_viewport::WpViewport>,
+    /// `wp_fractional_scale_v1` add-on for this surface, if the compositor
+    /// advertises `wp_fractional_scale_manager_v1`.
+    pub fractional_scale: Option<wp_fractional_scale_v1::WpFractionalScaleV1>,
 }
 
 #[derive(Clone, Debug)]
@@ -148,6 +166,8 @@ impl WaylandAppState {
             display,
             compositor: None,
             layer_shell: None,
+            viewporter: None,
+            fractional_scale_manager: None,
             seats: HashMap::new(),
             pointers: HashMap::new(),
             keyboards: HashMap::new(),
@@ -164,6 +184,8 @@ impl WaylandAppState {
             output_order: Vec::new(),
             surfaces: HashMap::new(),
             surface_to_output: HashMap::new(),
+            output_fractional_scale: HashMap::new(),
+            output_integer_scale: HashMap::new(),
             xdg_output_manager: None,
             xdg_outputs: HashMap::new(),
         }
@@ -294,6 +316,15 @@ impl Dispatch<wl_registry::WlRegistry, ()> for WaylandAppState {
                         info!("xdg_output_manager found: {} (version {})", name, version);
                         state.xdg_output_manager = Some(registry.bind(name, version, qh, ()));
                     }
+                    "wp_viewporter" => {
+                        info!("wp_viewporter found: {} (version {})", name, version);
+                        state.viewporter = Some((registry.bind(name, version, qh, ()), name));
+                    }
+                    "wp_fractional_scale_manager_v1" => {
+                        info!("fractional_scale_manager found: {} (version {})", name, version);
+                        state.fractional_scale_manager =
+                            Some((registry.bind(name, version, qh, ()), name));
+                    }
                     "zwp_text_input_manager_v3" => {
                         info!("TextInputManager found: {} (version {})", name, version);
                         let manager =
@@ -315,9 +346,22 @@ impl Dispatch<wl_registry::WlRegistry, ()> for WaylandAppState {
                 }
                 if state.outputs.remove(&name).is_some() {
                     warn!("Output {} removed", name);
-                    state.surfaces.remove(&name);
+                    if let Some(surface) = state.surfaces.remove(&name) {
+                        if let Some(viewport) = surface.viewport {
+                            viewport.destroy();
+                        }
+                        if let Some(fractional_scale) = surface.fractional_scale {
+                            fractional_scale.destroy();
+                        }
+                        surface.layer_surface.destroy();
+                        surface.surface.destroy();
+                    }
                     state.surface_to_output.retain(|_, output| *output != name);
                     state.output_order.retain(|n| *n != name);
+                    state.output_fractional_scale.remove(&name);
+                    state.output_integer_scale.remove(&name);
+                    state.output_info.remove(&name);
+                    state.dirty_outputs.remove(&name);
                     if state
                         .pointer_focus
                         .as_ref()
@@ -346,6 +390,18 @@ impl Dispatch<wl_registry::WlRegistry, ()> for WaylandAppState {
                 {
                     warn!("LayerShell {} removed", name);
                     state.layer_shell = None;
+                }
+                if let Some((_, viewporter_name)) = &state.viewporter
+                    && *viewporter_name == name
+                {
+                    warn!("Viewporter {} removed", name);
+                    state.viewporter = None;
+                }
+                if let Some((_, frac_manager_name)) = &state.fractional_scale_manager
+                    && *frac_manager_name == name
+                {
+                    warn!("FractionalScaleManager {} removed", name);
+                    state.fractional_scale_manager = None;
                 }
                 if let Some((_, text_input_name)) = &state.text_input_manager
                     && *text_input_name == name
@@ -608,6 +664,13 @@ impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, ()> for WaylandAppState
                     .iter()
                     .find(|(_, entry)| entry.layer_surface == *surface)
                 {
+                    // viewport destination is in logical (surface-local) px, and is
+                    // double-buffered: it takes effect at the next wl_surface.commit,
+                    // which the WSI issues on present. Re-issue on every configure since
+                    // width/height may change (output resize / scale change).
+                    if let Some(viewport) = surf.viewport.as_ref() {
+                        viewport.set_destination(width.max(1) as i32, height.max(1) as i32);
+                    }
                     // bind xdg_output if available and not yet bound
                     if let (Some(manager), Some(wl_output)) =
                         (state.xdg_output_manager.as_ref(), state.outputs.get(output))
@@ -673,8 +736,8 @@ impl Dispatch<wl_callback::WlCallback, ()> for WaylandAppState {
 
 impl Dispatch<wl_surface::WlSurface, ()> for WaylandAppState {
     fn event(
-        _state: &mut Self,
-        _surface: &wl_surface::WlSurface,
+        state: &mut Self,
+        surface: &wl_surface::WlSurface,
         event: wl_surface::Event,
         _data: &(),
         _conn: &Connection,
@@ -688,7 +751,17 @@ impl Dispatch<wl_surface::WlSurface, ()> for WaylandAppState {
                 // Do nothing: Cursor leave event is not needed for background.
             }
             wl_surface::Event::PreferredBufferScale { factor } => {
-                debug!("Preferred buffer scale factor: {}", factor);
+                if let Some(output) = state
+                    .surface_to_output
+                    .get(&surface.id().protocol_id())
+                    .copied()
+                {
+                    debug!("Output {} preferred integer buffer scale: {}", output, factor);
+                    state
+                        .output_integer_scale
+                        .insert(output, factor.max(1) as u32);
+                    state.dirty_outputs.insert(output);
+                }
             }
             wl_surface::Event::PreferredBufferTransform { transform } => {
                 // todo: Device rotation support
@@ -856,5 +929,67 @@ impl Dispatch<wl_compositor::WlCompositor, ()> for WaylandAppState {
         _qh: &QueueHandle<Self>,
     ) {
         // Do nothing: Compositor never dispatches events.
+    }
+}
+
+impl Dispatch<wp_viewporter::WpViewporter, ()> for WaylandAppState {
+    fn event(
+        _state: &mut Self,
+        _viewporter: &wp_viewporter::WpViewporter,
+        _event: wp_viewporter::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        // No events.
+    }
+}
+
+impl Dispatch<wp_viewport::WpViewport, ()> for WaylandAppState {
+    fn event(
+        _state: &mut Self,
+        _viewport: &wp_viewport::WpViewport,
+        _event: wp_viewport::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        // No events.
+    }
+}
+
+impl Dispatch<wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1, ()> for WaylandAppState {
+    fn event(
+        _state: &mut Self,
+        _manager: &wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1,
+        _event: wp_fractional_scale_manager_v1::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        // No events.
+    }
+}
+
+impl Dispatch<wp_fractional_scale_v1::WpFractionalScaleV1, u32> for WaylandAppState {
+    fn event(
+        state: &mut Self,
+        _fractional_scale: &wp_fractional_scale_v1::WpFractionalScaleV1,
+        event: wp_fractional_scale_v1::Event,
+        output_name: &u32,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        match event {
+            wp_fractional_scale_v1::Event::PreferredScale { scale } => {
+                info!(
+                    "Output {} fractional preferred scale: {} ({}x)",
+                    output_name, scale, scale as f32 / 120.0
+                );
+                state.output_fractional_scale.insert(*output_name, scale);
+                state.dirty_outputs.insert(*output_name);
+            }
+            _ => {}
+        }
     }
 }

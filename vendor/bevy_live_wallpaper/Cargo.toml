@@ -111,6 +111,7 @@ version = "0.32.9"
 features = [
     "client",
     "unstable",
+    "staging",
 ]
 optional = true
 

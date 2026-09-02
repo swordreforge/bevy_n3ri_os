@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::io::ErrorKind;
 
 use bevy::{
-    camera::RenderTarget,
+    camera::{ImageRenderTarget, RenderTarget},
     prelude::*,
     render::{
         Render, RenderApp, RenderSystems, extract_resource::ExtractResourcePlugin,
@@ -135,8 +135,31 @@ fn wayland_event_system(
             touched = true;
         }
 
-        // Integrate fresh logical positions/sizes from xdg-output / wl_output.
+        // Integrate fresh logical positions from xdg-output / wl_output.
         if apply_output_info_updates(&mut surface_descriptor, &mut app_state) {
+            touched = true;
+        }
+
+        // Recompute buffer-space geometry from the compositor's reported scale
+        // preference (fractional preferred over integer). Requires the surface's
+        // wp_viewport object; without viewporter support buffers stay logical-sized.
+        let scale_changed = surface_descriptor.recompute_buffer_layout(|output| {
+            let has_viewport = app_state
+                .surfaces
+                .get(&output)
+                .is_some_and(|s| s.viewport.is_some());
+            if !has_viewport {
+                return (1, 1);
+            }
+            if let Some(&num) = app_state.output_fractional_scale.get(&output) {
+                return (num, 120);
+            }
+            if let Some(&factor) = app_state.output_integer_scale.get(&output) {
+                return (factor, 1);
+            }
+            (1, 1)
+        });
+        if scale_changed {
             touched = true;
         }
 
@@ -194,6 +217,7 @@ fn wayland_event_system(
             ready_bounds(&surface_descriptor, &app_state, &target_monitor)
         {
             surface_info.set(min_x, min_y, w, h);
+            surface_info.scale = surface_descriptor.image_scale_f32().max(1.0);
         }
     }
 }
@@ -294,8 +318,14 @@ fn apply_pointer_events(
     }
 }
 
-/// Apply the latest logical position/size info to existing surface descriptors.
+/// Apply the latest logical positions to existing surface descriptors.
 /// Returns true if any descriptor changed.
+///
+/// Only offsets are synced here: a surface's logical width/height is owned by
+/// the layer-surface Configure event (which niri reports in logical pixels),
+/// while `output_info.width/height` mixes wl_output::Mode (physical) and
+/// xdg_output LogicalSize (logical) — copying it would race and desync the
+/// logical layout from the compositor's view.
 fn apply_output_info_updates(
     descriptor: &mut WaylandSurfaceDescriptor,
     app_state: &mut WaylandAppState,
@@ -325,13 +355,6 @@ fn apply_output_info_updates(
             update_if(&mut surface.offset_x, info.x, &mut changed);
             update_if(&mut surface.offset_y, info.y, &mut changed);
 
-            if info.width > 0 {
-                update_if(&mut surface.width, info.width as u32, &mut changed);
-            }
-            if info.height > 0 {
-                update_if(&mut surface.height, info.height as u32, &mut changed);
-            }
-
             changed_any |= changed;
         }
     }
@@ -345,7 +368,9 @@ fn sync_wayland_render_target_image(
     mut target: ResMut<WaylandRenderTarget>,
     mut images: ResMut<Assets<Image>>,
 ) {
-    let Some((_, _, width, height)) = descriptor.overall_bounds() else {
+    // Buffer-space pixel size: union of surface buf rects (logical * image_scale).
+    // The camera's ImageRenderTarget.scale_factor restores the logical viewport.
+    let Some((width, height)) = descriptor.buffer_bounds() else {
         return;
     };
 
@@ -371,14 +396,24 @@ fn sync_wayland_render_target_image(
 }
 
 fn assign_wayland_camera_target(
+    descriptor: Res<WaylandSurfaceDescriptor>,
     target: Res<WaylandRenderTarget>,
     mut commands: Commands,
-    cameras: Query<Entity, With<LiveWallpaperCamera>>,
+    cameras: Query<(Entity, Option<&RenderTarget>), With<LiveWallpaperCamera>>,
 ) {
-    for entity in &cameras {
-        commands
-            .entity(entity)
-            .insert(RenderTarget::Image(target.image.clone().into()));
+    let scale_factor = descriptor.image_scale_f32();
+    for (entity, current) in &cameras {
+        let matches = matches!(
+            current,
+            Some(RenderTarget::Image(irt))
+                if irt.handle == target.image && irt.scale_factor == scale_factor
+        );
+        if !matches {
+            commands.entity(entity).insert(RenderTarget::Image(ImageRenderTarget {
+                handle: target.image.clone(),
+                scale_factor,
+            }));
+        }
     }
 }
 
@@ -433,12 +468,21 @@ fn ensure_surfaces_for_outputs(
         layer_surface.set_keyboard_interactivity(
             zwlr_layer_surface_v1::KeyboardInteractivity::OnDemand,
         );
+        let viewport = app_state
+            .viewporter
+            .as_ref()
+            .map(|(viewporter, _)| viewporter.get_viewport(&surface, qh, ()));
+        let fractional_scale = app_state.fractional_scale_manager.as_ref().map(|(m, _)| {
+            m.get_fractional_scale(&surface, qh, *output_name)
+        });
         surface.commit();
         app_state.surfaces.insert(
             *output_name,
             super::OutputSurface {
                 surface: surface.clone(),
                 layer_surface,
+                viewport,
+                fractional_scale,
             },
         );
         app_state.surface_to_output.insert(surface_id, *output_name);
@@ -455,7 +499,12 @@ fn ensure_surfaces_for_outputs(
         .collect();
     for key in to_remove {
         if let Some(surface) = app_state.surfaces.remove(&key) {
-            // Explicitly destroy to stop showing on that output.
+            if let Some(viewport) = surface.viewport {
+                viewport.destroy();
+            }
+            if let Some(fractional_scale) = surface.fractional_scale {
+                fractional_scale.destroy();
+            }
             surface.layer_surface.destroy();
             surface.surface.destroy();
             app_state

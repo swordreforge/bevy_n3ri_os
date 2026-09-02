@@ -743,7 +743,7 @@ fn terminal_sync_output(
 fn terminal_selection(
     mouse: Res<ButtonInput<MouseButton>>,
     is_dragging: Res<IsDragging>,
-    windows: Query<&Window>,
+    cursor: Res<CursorPosition>,
     lines_query: Query<(&TerminalLine, &ComputedNode, &UiGlobalTransform, &TextLayoutInfo)>,
     container_query: Query<(&ComputedNode, &UiGlobalTransform), With<TerminalOutput>>,
     time: Res<Time>,
@@ -751,12 +751,10 @@ fn terminal_selection(
     focused: Res<FocusedTitle>,
     mut owner: ResMut<TextInputOwner>,
 ) {
-    let Ok(bevy_window) = windows.single() else {
+    if !cursor.active {
         return;
-    };
-    let Some(cursor) = bevy_window.physical_cursor_position() else {
-        return;
-    };
+    }
+    let cursor = cursor.physical;
 
     let hit = lines_query.iter().find_map(|(line, node, transform, layout)| {
         if line.li == NO_LINE {
@@ -767,6 +765,12 @@ fn terminal_selection(
 
     if mouse.just_pressed(MouseButton::Left) {
         if focused.title == "终端" {
+            if owner.0 != TextInputFocus::Terminal {
+                info!(
+                    "[ime] terminal focus activated | cursor.physical={:?}",
+                    cursor
+                );
+            }
             owner.0 = TextInputFocus::Terminal;
         }
         if is_dragging.0 {

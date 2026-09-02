@@ -114,11 +114,13 @@ fn scroll_wheel_system(
         raw.push((e.window, e.y, e.x));
     }
     let delta: f32 = raw.iter().map(|(_, y, _)| y).sum();
-    eprintln!(
-        "[scroll] RAW {:?} ({} msgs, sum_y={delta})",
-        raw,
-        raw.len()
-    );
+    if !raw.is_empty() {
+        eprintln!(
+            "[scroll] RAW {:?} ({} msgs, sum_y={delta})",
+            raw,
+            raw.len()
+        );
+    }
     if delta == 0.0 {
         return;
     }

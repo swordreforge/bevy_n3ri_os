@@ -10,13 +10,16 @@ use wayland_client::protocol::wl_display;
 use wayland_client::{
     Connection, Dispatch, QueueHandle,
     protocol::{
-        wl_callback, wl_compositor, wl_output, wl_pointer, wl_registry, wl_seat, wl_surface,
+        wl_callback, wl_compositor, wl_keyboard, wl_output, wl_pointer, wl_registry, wl_seat,
+        wl_surface,
     },
 };
+use wayland_protocols::wp::text_input::zv3::client::{zwp_text_input_manager_v3, zwp_text_input_v3};
 use wayland_protocols::xdg::xdg_output::zv1::client::{zxdg_output_manager_v1, zxdg_output_v1};
 use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1, zwlr_layer_surface_v1};
 
 use self::surface::WaylandSurfaceHandles;
+use crate::input::WallpaperTextInputControl;
 
 #[derive(Clone, Debug)]
 pub(crate) struct PointerFocus {
@@ -38,6 +41,19 @@ pub(crate) struct WaylandAppState {
     pub layer_shell: Option<(zwlr_layer_shell_v1::ZwlrLayerShellV1, u32)>,
     pub seats: HashMap<u32, wl_seat::WlSeat>,
     pub pointers: HashMap<u32, wl_pointer::WlPointer>,
+    pub keyboards: HashMap<u32, wl_keyboard::WlKeyboard>,
+    pub pending_keyboard_events: Vec<PendingKeyboardEvent>,
+    pub text_input_manager: Option<(zwp_text_input_manager_v3::ZwpTextInputManagerV3, u32)>,
+    pub text_input: Option<zwp_text_input_v3::ZwpTextInputV3>,
+    /// Surface currently holding the seat's text-input focus (from `enter` event).
+    pub text_input_focus_surface: Option<wl_surface::WlSurface>,
+    /// Whether we currently have a pending `enable` on the text-input object.
+    pub text_input_enabled: bool,
+    /// Last applied surrounding text (text, cursor byte offset, anchor byte offset).
+    pub text_input_surrounding: Option<(String, usize, usize)>,
+    /// Last applied cursor rectangle (x, y, w, h) in surface-local logical px.
+    pub text_input_cursor_rect: Option<(i32, i32, i32, i32)>,
+    pub pending_text_input_events: Vec<PendingTextInputEvent>,
     pub outputs: HashMap<u32, wl_output::WlOutput>,
     pub output_info: HashMap<u32, OutputInfo>,
     pub output_order: Vec<u32>,
@@ -73,6 +89,34 @@ pub(crate) enum PendingPointerEventKind {
     },
 }
 
+/// Keyboard event captured from `wl_keyboard`, forwarded to the host app.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PendingKeyboardEvent {
+    /// XKB keycode (Linux evdev scan code).
+    pub keycode: u32,
+    /// True for key press, false for release.
+    pub pressed: bool,
+}
+
+/// Text-input event captured from `zwp_text_input_v3`, forwarded to the host app.
+#[derive(Clone, Debug)]
+pub(crate) enum PendingTextInputEvent {
+    /// Seat text-input focus entered one of our surfaces.
+    Enter,
+    /// Seat text-input focus left our surface.
+    Leave,
+    /// Composing (pre-edit) text update; buffered until `Done`.
+    Preedit {
+        text: String,
+        cursor_begin: i32,
+        cursor_end: i32,
+    },
+    /// Committed text; buffered until `Done`.
+    Commit { text: String },
+    /// Apply buffered preedit/commit state.
+    Done { serial: u32 },
+}
+
 impl PendingPointerEventKind {
     /// Returns button state transition if this event represents a button action.
     fn button_change(&self) -> Option<(Option<MouseButton>, bool)> {
@@ -106,6 +150,15 @@ impl WaylandAppState {
             layer_shell: None,
             seats: HashMap::new(),
             pointers: HashMap::new(),
+            keyboards: HashMap::new(),
+            pending_keyboard_events: Vec::new(),
+            text_input_manager: None,
+            text_input: None,
+            text_input_focus_surface: None,
+            text_input_enabled: false,
+            text_input_surrounding: None,
+            text_input_cursor_rect: None,
+            pending_text_input_events: Vec::new(),
             outputs: HashMap::new(),
             output_info: HashMap::new(),
             output_order: Vec::new(),
@@ -126,6 +179,66 @@ impl WaylandAppState {
 
     pub(crate) fn take_surface_config(&mut self) -> Vec<WaylandSurfaceConfig> {
         std::mem::take(&mut self.pending_surface_config)
+    }
+
+    /// Lazily create the `zwp_text_input_v3` object once both the manager and a
+    /// seat are available.
+    pub(crate) fn ensure_text_input(&mut self, qh: &QueueHandle<Self>) {
+        if self.text_input.is_some() {
+            return;
+        }
+        let Some((manager, _)) = self.text_input_manager.as_ref() else {
+            return;
+        };
+        let Some(seat) = self.seats.values().next() else {
+            return;
+        };
+        self.text_input = Some(manager.get_text_input(seat, qh, ()));
+    }
+
+    /// Apply host-app IME control to the wire protocol. Enables/disables the
+    /// text-input object and updates surrounding text / cursor rectangle.
+    /// Text-input-v3 requests are double-buffered and applied by the compositor
+    /// on `commit`, so a single commit flushes a batched state change.
+    pub(crate) fn apply_text_input_control(&mut self, control: &WallpaperTextInputControl) {
+        let Some(text_input) = self.text_input.clone() else {
+            return;
+        };
+        // `enable` must follow a seat text-input `enter` on our surface;
+        // without focus the compositor ignores all requests.
+        if self.text_input_focus_surface.is_none() {
+            if self.text_input_enabled {
+                self.text_input_enabled = false;
+                self.text_input_surrounding = None;
+                self.text_input_cursor_rect = None;
+            }
+            return;
+        }
+        if control.enabled != self.text_input_enabled {
+            self.text_input_enabled = control.enabled;
+            if control.enabled {
+                text_input.enable();
+            } else {
+                text_input.disable();
+                self.text_input_surrounding = None;
+                self.text_input_cursor_rect = None;
+            }
+            text_input.commit();
+        } else if control.enabled {
+            if control.surrounding_text != self.text_input_surrounding {
+                if let Some((text, cursor, anchor)) = &control.surrounding_text {
+                    text_input.set_surrounding_text(text.to_string(), *cursor as i32, *anchor as i32);
+                }
+                self.text_input_surrounding = control.surrounding_text.clone();
+            }
+            if control.cursor_rect != self.text_input_cursor_rect {
+                if let Some((x, y, w, h)) = control.cursor_rect {
+                    text_input.set_cursor_rectangle(x, y, w, h);
+                }
+                self.text_input_cursor_rect = control.cursor_rect;
+            }
+            text_input.commit();
+        }
     }
 }
 
@@ -181,6 +294,14 @@ impl Dispatch<wl_registry::WlRegistry, ()> for WaylandAppState {
                         info!("xdg_output_manager found: {} (version {})", name, version);
                         state.xdg_output_manager = Some(registry.bind(name, version, qh, ()));
                     }
+                    "zwp_text_input_manager_v3" => {
+                        info!("TextInputManager found: {} (version {})", name, version);
+                        let manager =
+                            registry.bind::<zwp_text_input_manager_v3::ZwpTextInputManagerV3, _, _>(
+                                name, version, qh, (),
+                            );
+                        state.text_input_manager = Some((manager, name));
+                    }
                     _ => {}
                 }
             }
@@ -215,6 +336,9 @@ impl Dispatch<wl_registry::WlRegistry, ()> for WaylandAppState {
                     if let Some(pointer) = state.pointers.remove(&seat_id) {
                         pointer.release();
                     }
+                    if let Some(keyboard) = state.keyboards.remove(&seat_id) {
+                        keyboard.release();
+                    }
                     seat.release();
                 }
                 if let Some((_, layer_shell_name)) = &state.layer_shell
@@ -222,6 +346,15 @@ impl Dispatch<wl_registry::WlRegistry, ()> for WaylandAppState {
                 {
                     warn!("LayerShell {} removed", name);
                     state.layer_shell = None;
+                }
+                if let Some((_, text_input_name)) = &state.text_input_manager
+                    && *text_input_name == name
+                {
+                    warn!("TextInputManager {} removed", name);
+                    state.text_input_manager = None;
+                    state.text_input = None;
+                    state.text_input_focus_surface = None;
+                    state.text_input_enabled = false;
                 }
             }
             _ => {}
@@ -258,6 +391,11 @@ impl Dispatch<wl_seat::WlSeat, ()> for WaylandAppState {
                     wayland_client::WEnum::Value(cap)
                         if cap.contains(wl_seat::Capability::Pointer)
                 );
+                let has_keyboard = matches!(
+                    capabilities,
+                    wayland_client::WEnum::Value(cap)
+                        if cap.contains(wl_seat::Capability::Keyboard)
+                );
                 let seat_id = seat.id().protocol_id();
 
                 if has_pointer {
@@ -267,6 +405,15 @@ impl Dispatch<wl_seat::WlSeat, ()> for WaylandAppState {
                         .or_insert_with(|| seat.get_pointer(qh, seat_id));
                 } else if let Some(pointer) = state.pointers.remove(&seat_id) {
                     pointer.release();
+                }
+
+                if has_keyboard {
+                    state
+                        .keyboards
+                        .entry(seat_id)
+                        .or_insert_with(|| seat.get_keyboard(qh, seat_id));
+                } else if let Some(keyboard) = state.keyboards.remove(&seat_id) {
+                    keyboard.release();
                 }
             }
             wl_seat::Event::Name { .. } => {}
@@ -396,6 +543,35 @@ impl Dispatch<wl_pointer::WlPointer, u32> for WaylandAppState {
                     });
                 }
             }
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<wl_keyboard::WlKeyboard, u32> for WaylandAppState {
+    fn event(
+        state: &mut Self,
+        _keyboard: &wl_keyboard::WlKeyboard,
+        event: wl_keyboard::Event,
+        _seat_id: &u32,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        match event {
+            wl_keyboard::Event::Key {
+                key, state: key_state, ..
+            } => {
+                let pressed = matches!(
+                    key_state,
+                    wayland_client::WEnum::Value(wl_keyboard::KeyState::Pressed)
+                );
+                state.pending_keyboard_events.push(PendingKeyboardEvent {
+                    keycode: key,
+                    pressed,
+                });
+            }
+            wl_keyboard::Event::Modifiers { .. } | wl_keyboard::Event::Enter { .. }
+            | wl_keyboard::Event::Leave { .. } | wl_keyboard::Event::Keymap { .. } => {}
             _ => {}
         }
     }
@@ -560,6 +736,70 @@ impl Dispatch<wl_output::WlOutput, ()> for WaylandAppState {
                     .or_default();
                 info.scale = factor;
                 state.dirty_outputs.insert(output.id().protocol_id());
+            }
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<zwp_text_input_manager_v3::ZwpTextInputManagerV3, ()> for WaylandAppState {
+    fn event(
+        _state: &mut Self,
+        _object: &zwp_text_input_manager_v3::ZwpTextInputManagerV3,
+        _event: zwp_text_input_manager_v3::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        // manager has no events
+    }
+}
+
+impl Dispatch<zwp_text_input_v3::ZwpTextInputV3, ()> for WaylandAppState {
+    fn event(
+        state: &mut Self,
+        _text_input: &zwp_text_input_v3::ZwpTextInputV3,
+        event: zwp_text_input_v3::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        match event {
+            zwp_text_input_v3::Event::Enter { surface } => {
+                state.text_input_focus_surface = Some(surface.clone());
+                state.pending_text_input_events.push(PendingTextInputEvent::Enter);
+            }
+            zwp_text_input_v3::Event::Leave { .. } => {
+                state.text_input_focus_surface = None;
+                state.text_input_enabled = false;
+                state
+                    .pending_text_input_events
+                    .push(PendingTextInputEvent::Leave);
+            }
+            zwp_text_input_v3::Event::PreeditString {
+                text,
+                cursor_begin,
+                cursor_end,
+            } => {
+                state
+                    .pending_text_input_events
+                    .push(PendingTextInputEvent::Preedit {
+                        text: text.unwrap_or_default(),
+                        cursor_begin,
+                        cursor_end,
+                    });
+            }
+            zwp_text_input_v3::Event::CommitString { text } => {
+                state
+                    .pending_text_input_events
+                    .push(PendingTextInputEvent::Commit {
+                        text: text.unwrap_or_default(),
+                    });
+            }
+            zwp_text_input_v3::Event::Done { serial } => {
+                state
+                    .pending_text_input_events
+                    .push(PendingTextInputEvent::Done { serial });
             }
             _ => {}
         }

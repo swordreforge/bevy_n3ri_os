@@ -13,6 +13,8 @@ use n3ri_ui::cursor::{CursorPosition, UiArea};
 use n3ri_ui::desktop::DesktopBackgroundMaterial;
 use n3ri_ui::font::N3riFonts;
 use n3ri_ui::wallpaper_bridge::{SatelliteDeltaChannel, WallpaperInputBridgePlugin};
+use n3ri_ui::wallpaper_ime::WallpaperImePlugin;
+use n3ri_ui::wallpaper_keyboard::WallpaperKeyboardPlugin;
 use n3ri_ui::window::AppWindow;
 use n3ri_ui::N3riUiPlugin;
 use n3ri_ui::chat_capsule::{ChatEmotionEvent, ChatRise};
@@ -73,7 +75,7 @@ fn main() {
 fn print_help() {
     println!("n3ri_os");
     println!("  (无参数)      窗口模式（伪 OS 桌面主窗）");
-    println!("  --wallpaper   壁纸模式（layer-shell 桌面壁纸，全 UI 进壁纸层；无键盘/IME/滚轮）");
+    println!("  --wallpaper   壁纸模式（layer-shell 桌面壁纸，全 UI 进壁纸层；键盘/IME 直连，滚轮经 vendored 捕获）");
     println!("  --satellite   全局指针卫星进程（XQueryPointer 轮询 → stdout 绝对坐标流；壁纸模式自动拉起）");
     println!("  -h, --help    显示本帮助");
 }
@@ -151,6 +153,8 @@ fn run_wallpaper() {
         .add_plugins(focus::FocusPlugin)
         .add_plugins(LiveWallpaperPlugin::default())
         .add_plugins(WallpaperInputBridgePlugin)
+        .add_plugins(WallpaperImePlugin)
+        .add_plugins(WallpaperKeyboardPlugin)
         // 无主窗口时 winit 判定"未聚焦"走 reactive_low_power，整应用掉到 ~8fps：
         // 按键释放延迟一帧以上。Continuous 在无窗口下不触发重绘（应用冻结），
         // Reactive+wait 是唯一既有节奏又持续 tick 的模式，15ms ≈ 66fps 上限。

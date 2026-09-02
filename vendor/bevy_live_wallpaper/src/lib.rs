@@ -32,7 +32,10 @@ mod windows_backend;
 pub use plugin::{LinuxBackend, LiveWallpaperPlugin, WallpaperDisplayMode};
 
 pub use camera::LiveWallpaperCamera;
-pub use input::{PointerButton, PointerSample, WallpaperPointerState};
+pub use input::{
+    KeyboardEvent, PointerButton, PointerSample, TextInputEvent, WallpaperKeyboardState,
+    WallpaperPointerState, WallpaperTextInputControl, WallpaperTextInputState,
+};
 pub use surface_info::WallpaperSurfaceInfo;
 pub use target_monitor::WallpaperTargetMonitor;
 

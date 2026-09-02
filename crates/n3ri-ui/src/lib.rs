@@ -14,6 +14,8 @@ pub mod scroll;
 pub mod snap;
 pub mod topbar;
 pub mod wallpaper_bridge;
+pub mod wallpaper_ime;
+pub mod wallpaper_keyboard;
 pub mod window;
 
 pub use chat_capsule::ChatCapsuleState;

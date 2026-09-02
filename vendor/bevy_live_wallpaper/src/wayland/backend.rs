@@ -13,12 +13,13 @@ use wayland_client::{Connection, EventQueue, Proxy, QueueHandle};
 use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1, zwlr_layer_surface_v1};
 
 use crate::{
-    LiveWallpaperCamera, PointerButton, PointerSample, WallpaperPointerState, WallpaperSurfaceInfo,
-    WallpaperTargetMonitor,
+    KeyboardEvent, LiveWallpaperCamera, PointerButton, PointerSample, TextInputEvent,
+    WallpaperKeyboardState, WallpaperPointerState, WallpaperSurfaceInfo, WallpaperTargetMonitor,
+    WallpaperTextInputControl, WallpaperTextInputState,
 };
 
 use super::{
-    PendingPointerEvent, PendingPointerEventKind, WaylandAppState,
+    PendingPointerEvent, PendingPointerEventKind, PendingTextInputEvent, WaylandAppState,
     render::{
         WaylandGpuSurfaceState, WaylandRenderTarget, WaylandSurfaceDescriptor,
         create_wayland_image, prepare_wayland_surface, present_wayland_surface,
@@ -99,6 +100,9 @@ fn wayland_event_system(
     mut surface_descriptor: ResMut<WaylandSurfaceDescriptor>,
     target_monitor: Res<WallpaperTargetMonitor>,
     mut pointer_state: ResMut<WallpaperPointerState>,
+    mut keyboard_state: ResMut<WallpaperKeyboardState>,
+    mut text_input_state: ResMut<WallpaperTextInputState>,
+    text_input_control: Res<WallpaperTextInputControl>,
     mut surface_info: ResMut<WallpaperSurfaceInfo>,
 ) {
     if app_state.is_running() {
@@ -111,6 +115,7 @@ fn wayland_event_system(
         }
 
         let qh = event_queue.handle();
+        app_state.ensure_text_input(&qh);
         let (mut touched, removed) =
             ensure_surfaces_for_outputs(&mut app_state, &qh, &target_monitor);
 
@@ -149,6 +154,41 @@ fn wayland_event_system(
             sample.delta = Vec2::ZERO;
             sample.last_button = None;
         }
+
+        if !app_state.pending_keyboard_events.is_empty() {
+            keyboard_state.events = app_state
+                .pending_keyboard_events
+                .drain(..)
+                .map(|e| KeyboardEvent {
+                    keycode: e.keycode,
+                    pressed: e.pressed,
+                })
+                .collect();
+        }
+
+        if !app_state.pending_text_input_events.is_empty() {
+            text_input_state.events = app_state
+                .pending_text_input_events
+                .drain(..)
+                .map(|e| match e {
+                    PendingTextInputEvent::Enter => TextInputEvent::Enter,
+                    PendingTextInputEvent::Leave => TextInputEvent::Leave,
+                    PendingTextInputEvent::Preedit {
+                        text,
+                        cursor_begin,
+                        cursor_end,
+                    } => TextInputEvent::Preedit {
+                        text,
+                        cursor_begin,
+                        cursor_end,
+                    },
+                    PendingTextInputEvent::Commit { text } => TextInputEvent::Commit { text },
+                    PendingTextInputEvent::Done { serial } => TextInputEvent::Done { serial },
+                })
+                .collect();
+        }
+
+        app_state.apply_text_input_control(&text_input_control);
 
         if let Some((min_x, min_y, w, h)) =
             ready_bounds(&surface_descriptor, &app_state, &target_monitor)
@@ -390,6 +430,9 @@ fn ensure_surfaces_for_outputs(
                 | zwlr_layer_surface_v1::Anchor::Right,
         );
         layer_surface.set_size(0, 0);
+        layer_surface.set_keyboard_interactivity(
+            zwlr_layer_surface_v1::KeyboardInteractivity::OnDemand,
+        );
         surface.commit();
         app_state.surfaces.insert(
             *output_name,

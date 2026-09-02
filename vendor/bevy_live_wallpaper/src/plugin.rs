@@ -1,6 +1,9 @@
 use bevy::prelude::*;
 
-use crate::{WallpaperPointerState, WallpaperSurfaceInfo, WallpaperTargetMonitor};
+use crate::{
+    WallpaperKeyboardState, WallpaperPointerState, WallpaperSurfaceInfo, WallpaperTargetMonitor,
+    WallpaperTextInputControl, WallpaperTextInputState,
+};
 
 /// Main plugin to run the live wallpaper.
 #[derive(Default)]
@@ -39,6 +42,9 @@ impl Plugin for LiveWallpaperPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(self.target_monitor)
             .init_resource::<WallpaperPointerState>()
+            .init_resource::<WallpaperKeyboardState>()
+            .init_resource::<WallpaperTextInputState>()
+            .init_resource::<WallpaperTextInputControl>()
             .init_resource::<WallpaperSurfaceInfo>();
 
         match self.display_mode {

@@ -78,21 +78,45 @@ impl Default for UserSettings {
 }
 
 impl UserSettings {
+    /// 统一配置目录 ~/.config/n3ri_os（与 n3ri-llm 的 llm-config.json 同目录）
+    fn config_dir() -> PathBuf {
+        dirs::config_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("n3ri_os")
+    }
+
     fn settings_path() -> PathBuf {
-        let mut path = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        path.push("user_settings.json");
-        path
+        Self::config_dir().join("user_settings.json")
+    }
+
+    /// 迁移源：统一到 config dir 之前遗留的 cwd/user_settings.json
+    fn legacy_settings_path() -> PathBuf {
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join("user_settings.json")
     }
 
     pub fn load() -> Self {
         let path = Self::settings_path();
         match fs::read_to_string(&path) {
             Ok(json) => serde_json::from_str(&json).unwrap_or_default(),
-            Err(_) => Self::default(),
+            Err(_) => {
+                let legacy = Self::legacy_settings_path();
+                match fs::read_to_string(&legacy) {
+                    Ok(json) => {
+                        let settings: Self = serde_json::from_str(&json).unwrap_or_default();
+                        settings.save();
+                        settings
+                    }
+                    Err(_) => Self::default(),
+                }
+            }
         }
     }
 
     pub fn save(&self) {
+        let dir = Self::config_dir();
+        let _ = fs::create_dir_all(&dir);
         let path = Self::settings_path();
         if let Ok(json) = serde_json::to_string_pretty(self) {
             let _ = fs::write(path, json);

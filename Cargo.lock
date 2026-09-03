@@ -4031,6 +4031,7 @@ name = "n3ri-core"
 version = "0.1.0"
 dependencies = [
  "bevy",
+ "dirs",
  "serde",
  "serde_json",
 ]

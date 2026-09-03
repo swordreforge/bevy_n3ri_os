@@ -75,7 +75,7 @@ struct SettingsState {
     gpu: Option<f32>,
     prev_cpu: (u64, u64),
     prev_gpu_rc6: Option<(u64, Instant)>,
-    llm_form: [String; 4],
+    llm_form: [String; 5],
     llm_focus: Option<usize>,
     llm_test: Arc<Mutex<LlmTest>>,
     last_music_key: Option<String>,
@@ -96,7 +96,13 @@ impl Default for SettingsState {
             prev_gpu_rc6: None,
             llm_form: {
                 let cfg = n3ri_llm::load_config();
-                let mut form = [cfg.base_url, cfg.model, cfg.api_key, String::new()];
+                let mut form = [
+                    cfg.base_url,
+                    cfg.model,
+                    cfg.api_key,
+                    String::new(),
+                    String::new(),
+                ];
                 form[3] = UserSettings::load().music_dir.unwrap_or_default();
                 form
             },
@@ -120,7 +126,7 @@ struct SettingsEntities {
     quality_label: Option<Entity>,
     net_status: Option<Entity>,
     net_latency: Option<Entity>,
-    llm_text: [Option<Entity>; 4],
+    llm_text: [Option<Entity>; 5],
     llm_status: Option<Entity>,
     bar_fill: [Option<Entity>; 3],
     bar_pct: [Option<Entity>; 3],
@@ -440,6 +446,7 @@ fn spawn_music_page(
         page_header(page, fonts, "音乐歌单", "扫描本地音频文件夹播放");
         spawn_now_playing_card(page, fonts, settings, ents);
         spawn_dir_row(page, fonts, state, ents);
+        spawn_music_search_row(page, fonts, state, ents);
         spawn_track_list_container(page, ents);
     });
 
@@ -661,6 +668,87 @@ fn spawn_dir_row(
 /// 曲目列表的固定视口内嵌滚动区。行超高后自然出现列表自身的滚动条，
 /// 与整页滚动相互独立。
 const TRACK_LIST_VIEWPORT_H: f32 = 300.0;
+
+fn spawn_music_search_row(
+    parent: &mut ChildSpawnerCommands,
+    fonts: &N3riFonts,
+    state: &SettingsState,
+    ents: &mut SettingsEntities,
+) {
+    parent
+        .spawn(Node {
+            width: Val::Percent(100.0),
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            column_gap: Val::Px(10.0),
+            ..default()
+        })
+        .with_children(|row| {
+            row.spawn((
+                Text::new("🔍"),
+                TextFont {
+                    font: FontSource::Handle(fonts.default.clone()),
+                    font_size: FontSize::Px(13.0),
+                    ..default()
+                },
+                TextColor(TEXT_DIM),
+                Node {
+                    width: Val::Px(24.0),
+                    ..default()
+                },
+            ));
+
+            let focused = state.llm_focus == Some(4);
+            let shown = if state.llm_form[4].is_empty() && !focused {
+                "搜索曲目 / 歌手…".to_string()
+            } else {
+                let mut s = state.llm_form[4].clone();
+                if focused {
+                    s.push('▏');
+                }
+                s
+            };
+            row.spawn((
+                LlmInput(4),
+                Button,
+                Node {
+                    flex_grow: 1.0,
+                    height: Val::Px(30.0),
+                    align_items: AlignItems::Center,
+                    padding: UiRect::left(Val::Px(10.0)),
+                    border: UiRect::all(Val::Px(1.0)),
+                    border_radius: BorderRadius::all(Val::Px(6.0)),
+                    overflow: Overflow::hidden(),
+                    ..default()
+                },
+                BackgroundColor(Color::srgba(0.04, 0.08, 0.14, 0.8)),
+                BorderColor::all(if focused {
+                    ACCENT
+                } else {
+                    BUTTON_BORDER_COLOR
+                }),
+            ))
+            .with_children(|box_| {
+                let t_e = box_
+                    .spawn((
+                        LlmInputText,
+                        Text::new(shown),
+                        TextFont {
+                            font: FontSource::Handle(fonts.default.clone()),
+                            font_size: FontSize::Px(13.0),
+                            ..default()
+                        },
+                        TextColor(if state.llm_form[4].is_empty() && !focused {
+                            TEXT_DIM
+                        } else {
+                            TEXT_MAIN
+                        }),
+                    ))
+                    .id();
+                ents.llm_text[4] = Some(t_e);
+            });
+        });
+}
 
 fn spawn_track_list_container(parent: &mut ChildSpawnerCommands, ents: &mut SettingsEntities) {
     let area_e = parent
@@ -1976,7 +2064,7 @@ fn spawn_model_page(
     page_e
 }
 
-fn llm_config_from_form(form: &[String; 4]) -> LlmConfig {
+fn llm_config_from_form(form: &[String; 5]) -> LlmConfig {
     LlmConfig {
         base_url: form[0].clone(),
         model: form[1].clone(),
@@ -2098,8 +2186,9 @@ fn settings_llm_sync(
     state: Res<SettingsState>,
     ents: Res<SettingsEntities>,
     mut text_query: Query<&mut Text>,
+    mut color_query: Query<&mut TextColor>,
 ) {
-    for i in 0..4usize {
+    for i in 0..5usize {
         if let Some(e) = ents.llm_text[i] {
             if let Ok(mut text) = text_query.get_mut(e) {
                 let focused = state.llm_focus == Some(i);
@@ -2108,11 +2197,28 @@ fn settings_llm_sync(
                 } else {
                     state.llm_form[i].clone()
                 };
+                let mut dim = false;
+                if i == 4 && shown.is_empty() && !focused {
+                    shown = "搜索曲目 / 歌手…".to_string();
+                    dim = true;
+                }
                 if focused {
                     shown.push('▏');
                 }
                 if **text != shown {
                     **text = shown;
+                }
+                if let Ok(mut color) = color_query.get_mut(e) {
+                    let target = if dim {
+                        TEXT_DIM
+                    } else if i == 4 {
+                        TEXT_MAIN
+                    } else {
+                        color.0
+                    };
+                    if color.0 != target {
+                        color.0 = target;
+                    }
                 }
             }
         }
@@ -2174,6 +2280,7 @@ fn settings_music_sync(
     ents: Res<SettingsEntities>,
     library: Res<MusicLibrary>,
     status: Res<MusicStatus>,
+    state: Res<SettingsState>,
     mut text_query: Query<&mut Text>,
 ) {
     let current_idx = status.current;
@@ -2195,8 +2302,26 @@ fn settings_music_sync(
     } else {
         "桌面内置音乐".to_string()
     };
+    let query = state.llm_form[4].trim().to_lowercase();
     let count = if has_tracks {
-        format!("共 {} 首曲目", library.0.len())
+        if query.is_empty() {
+            format!("共 {} 首曲目", library.0.len())
+        } else {
+            let matched = library
+                .0
+                .iter()
+                .filter(|t| {
+                    let haystack = format!(
+                        "{} {} {}",
+                        t.title.to_lowercase(),
+                        t.artist.to_lowercase(),
+                        t.path.to_string_lossy().to_lowercase()
+                    );
+                    haystack.contains(&query)
+                })
+                .count();
+            format!("匹配 {matched} / {} 首曲目", library.0.len())
+        }
     } else {
         "未扫描到音频文件".to_string()
     };
@@ -2234,18 +2359,21 @@ fn settings_music_list_rebuild(
         return;
     };
 
+    let query = state.llm_form[4].trim().to_lowercase();
+
     let new_fp = if library.is_empty() {
         String::new()
     } else {
         let first = library.0.first().map(|t| t.path.to_string_lossy().into_owned()).unwrap_or_default();
         let last = library.0.last().map(|t| t.path.to_string_lossy().into_owned()).unwrap_or_default();
         format!(
-            "{}|{}|{}|{:?}|{}",
+            "{}|{}|{}|{:?}|{}|{}",
             library.0.len(),
             first,
             last,
             status.current,
-            status.playing
+            status.playing,
+            query
         )
     };
 
@@ -2256,6 +2384,15 @@ fn settings_music_list_rebuild(
     commands.entity(list_e).despawn_children();
 
     for (i, track) in library.0.iter().enumerate() {
+        let haystack = format!(
+            "{} {} {}",
+            track.title.to_lowercase(),
+            track.artist.to_lowercase(),
+            track.path.to_string_lossy().to_lowercase()
+        );
+        if !query.is_empty() && !haystack.contains(&query) {
+            continue;
+        }
         let title = track.title.clone();
         let is_current = status.current == Some(i);
         let bg = if is_current { Color::srgba(0.2, 0.35, 0.55, 0.6) } else { Color::NONE };

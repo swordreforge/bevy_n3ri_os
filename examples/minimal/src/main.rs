@@ -1,4 +1,3 @@
-use bevy::audio::GlobalVolume;
 use bevy::log::DEFAULT_FILTER;
 use bevy::prelude::*;
 use bevy::ui::IsDefaultUiCamera;
@@ -25,13 +24,13 @@ use x11rb::protocol::xproto::ConnectionExt;
 use x11rb::protocol::Event as X11Event;
 
 mod focus;
+mod music_player;
+
+use music_player::MusicPlayerPlugin;
 
 const BG_DARK: Color = Color::srgb(0.02, 0.05, 0.1);
 const CYAN: Color = Color::srgba(0.4, 0.95, 1.0, 1.0);
 const TRACK_COLOR: Color = Color::srgba(0.15, 0.2, 0.25, 0.5);
-
-#[derive(Component)]
-struct BgmMusic;
 
 /// 画质档位 → 宠物 RTT 最长边上限（像素）。
 /// 极限性能 1280（38fps）/ 平衡 1920（33fps，默认）/ 省电 960（最低 GPU 负载）
@@ -113,6 +112,7 @@ fn run_windowed() {
     )
         .add_plugins(N3riCorePlugin::default())
         .add_plugins(N3riUiPlugin)
+        .add_plugins(MusicPlayerPlugin)
         .add_plugins(n3ri_live2d::N3riLive2dPlugin)
         .add_plugins(focus::FocusPlugin)
         .add_systems(Startup, spawn_camera)
@@ -129,8 +129,8 @@ fn run_windowed() {
             Update,
             update_loading_screen.run_if(in_state(OsState::Loading)),
         )
-        .add_systems(OnEnter(OsState::Desktop), (spawn_desktop_screen, start_bgm))
-        .add_systems(Update, (toggle_head_display, update_bgm_volume))
+        .add_systems(OnEnter(OsState::Desktop), spawn_desktop_screen)
+        .add_systems(Update, (toggle_head_display,))
         .run();
 }
 
@@ -160,6 +160,7 @@ fn run_wallpaper() {
     )
         .add_plugins(N3riCorePlugin::default())
         .add_plugins(N3riUiPlugin)
+        .add_plugins(MusicPlayerPlugin)
         .add_plugins(n3ri_live2d::N3riLive2dPlugin)
         .add_plugins(focus::FocusPlugin)
         .add_plugins(LiveWallpaperPlugin::default())
@@ -210,8 +211,8 @@ fn run_wallpaper() {
             Update,
             update_loading_screen.run_if(in_state(OsState::Loading)),
         )
-        .add_systems(OnEnter(OsState::Desktop), (spawn_desktop_screen, start_bgm))
-        .add_systems(Update, (toggle_head_display, update_bgm_volume))
+        .add_systems(OnEnter(OsState::Desktop), spawn_desktop_screen)
+        .add_systems(Update, (toggle_head_display,))
         .run();
 }
 
@@ -732,44 +733,6 @@ fn toggle_head_display(
     };
     if wanted.0 != occluded {
         wanted.0 = occluded;
-    }
-}
-
-fn start_bgm(
-    mut commands: Commands,
-    asset_server: Res<AssetServer>,
-    settings: Res<UserSettings>,
-) {
-    let bgm_handle = asset_server.load("nori/audio/bgm1.ogg");
-    let music_vol = settings.volumes[1] as f32 / 100.0;
-    commands.spawn((
-        BgmMusic,
-        AudioPlayer::new(bgm_handle),
-        PlaybackSettings::LOOP.with_volume(bevy::audio::Volume::Linear(music_vol)),
-    ));
-}
-
-fn update_bgm_volume(
-    settings: Res<UserSettings>,
-    mut sinks: Query<&mut AudioSink, With<BgmMusic>>,
-    mut global_volume: ResMut<GlobalVolume>,
-) {
-    if settings.is_changed() {
-        let master_vol = if settings.toggles[0] {
-            settings.volumes[0] as f32 / 100.0
-        } else {
-            0.0
-        };
-        global_volume.volume = bevy::audio::Volume::Linear(master_vol);
-
-        let music_vol = if settings.toggles[1] {
-            settings.volumes[1] as f32 / 100.0
-        } else {
-            0.0
-        };
-        for mut sink in sinks.iter_mut() {
-            sink.set_volume(bevy::audio::Volume::Linear(music_vol));
-        }
     }
 }
 

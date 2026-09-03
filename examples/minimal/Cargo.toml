@@ -24,12 +24,18 @@ bevy = { workspace = true, features = [
     "default_font",
     "png",
     "vorbis",
+    "mp3",
+    "flac",
+    "wav",
+    "aac",
+    "mp4",
     "x11",
     "wayland",
 ] }
 n3ri-core = { path = "../../crates/n3ri-core" }
 n3ri-ui = { path = "../../crates/n3ri-ui" }
 n3ri-live2d = { path = "../../crates/n3ri-live2d" }
+lofty = "0.22"
 # 壁纸模式：layer-shell 壁纸 surface + 全局指针卫星（XQueryPointer 轮询，触摸板/鼠标通吃）
 # vendored：本地补丁增加 wl_pointer.axis 滚动事件捕获（0.5.0 是最新版本，上游不处理 Axis）
 bevy_live_wallpaper = { path = "../../vendor/bevy_live_wallpaper", default-features = false, features = ["wayland"] }

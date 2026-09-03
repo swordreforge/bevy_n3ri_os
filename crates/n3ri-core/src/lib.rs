@@ -8,11 +8,13 @@
 
 pub mod config;
 pub mod events;
+pub mod music;
 pub mod state;
 
 use bevy::prelude::*;
 
 use config::{OsConfig, ThemeConfig, UserSettings};
+use music::{MusicLibrary, MusicStatus};
 use state::{DesktopState, OsState};
 
 pub struct N3riCorePlugin {
@@ -35,6 +37,9 @@ impl Plugin for N3riCorePlugin {
         app.init_resource::<state::BootState>();
         app.init_resource::<state::LoadState>();
 
+        app.init_resource::<MusicLibrary>();
+        app.init_resource::<MusicStatus>();
+
         app.init_state::<OsState>();
         app.add_sub_state::<DesktopState>();
 
@@ -46,6 +51,7 @@ impl Plugin for N3riCorePlugin {
         app.add_message::<events::NotificationEvent>();
         app.add_message::<events::SystemMenuEvent>();
         app.add_message::<events::ShutdownEvent>();
+        app.add_message::<music::MusicCommand>();
 
         app.add_systems(
             Update,
@@ -78,6 +84,7 @@ fn handle_load_complete(
 pub mod prelude {
     pub use crate::config::{OsConfig, ThemeConfig, UserSettings};
     pub use crate::events::*;
+    pub use crate::music::{MusicCommand, MusicLibrary, MusicStatus, MusicTrack, PlayMode};
     pub use crate::state::{AppId, BootState, DesktopState, LoadPhase, LoadState, OsState};
     pub use crate::N3riCorePlugin;
 }

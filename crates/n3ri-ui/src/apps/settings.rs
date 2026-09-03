@@ -1,5 +1,6 @@
 use bevy::prelude::*;
 use n3ri_core::config::UserSettings;
+use n3ri_core::music::{MusicCommand, MusicLibrary, MusicStatus, PlayMode};
 use n3ri_llm::{LlmClient, LlmConfig};
 use crate::apps::terminal::paste_text;
 use bevy::input::keyboard::{Key, KeyCode, KeyboardInput};
@@ -20,14 +21,14 @@ const TEXT_DIM: Color = Color::srgba(0.6, 0.7, 0.8, 0.75);
 const NAV_HIGHLIGHT: Color = Color::srgba(0.2, 0.35, 0.55, 0.6);
 const TRACK_BG: Color = Color::srgba(0.25, 0.3, 0.36, 0.8);
 const TOGGLE_OFF: Color = Color::srgba(0.3, 0.35, 0.4, 0.9);
-const DIVIDER: Color = Color::srgba(0.4, 0.5, 0.6, 0.25);
 const OK_GREEN: Color = Color::srgb(0.3, 0.85, 0.5);
 const BAD_RED: Color = Color::srgb(0.9, 0.35, 0.35);
 const BUTTON_BORDER_COLOR: Color = Color::srgba(0.55, 0.65, 0.75, 0.5);
 
 const QUALITY_OPTIONS: [&str; 3] = ["极限性能", "平衡", "省电"];
-const TAB_LABELS: [(&str, &str); 6] = [
+const TAB_LABELS: [(&str, &str); 7] = [
     ("sound", "声音"),
+    ("music", "音乐"),
     ("display", "显示效果"),
     ("network", "网络"),
     ("touch", "触控"),
@@ -38,6 +39,7 @@ const TAB_LABELS: [(&str, &str); 6] = [
 #[derive(Clone, Copy, PartialEq)]
 enum SettingsTab {
     Sound,
+    Music,
     Display,
     Network,
     Touch,
@@ -45,8 +47,9 @@ enum SettingsTab {
     Model,
 }
 
-const TAB_ORDER: [SettingsTab; 6] = [
+const TAB_ORDER: [SettingsTab; 7] = [
     SettingsTab::Sound,
+    SettingsTab::Music,
     SettingsTab::Display,
     SettingsTab::Network,
     SettingsTab::Touch,
@@ -72,9 +75,10 @@ struct SettingsState {
     gpu: Option<f32>,
     prev_cpu: (u64, u64),
     prev_gpu_rc6: Option<(u64, Instant)>,
-    llm_form: [String; 3],
+    llm_form: [String; 4],
     llm_focus: Option<usize>,
     llm_test: Arc<Mutex<LlmTest>>,
+    last_music_key: Option<String>,
 }
 
 
@@ -92,19 +96,22 @@ impl Default for SettingsState {
             prev_gpu_rc6: None,
             llm_form: {
                 let cfg = n3ri_llm::load_config();
-                [cfg.base_url, cfg.model, cfg.api_key]
+                let mut form = [cfg.base_url, cfg.model, cfg.api_key, String::new()];
+                form[3] = UserSettings::load().music_dir.unwrap_or_default();
+                form
             },
             llm_focus: None,
             llm_test: Arc::new(Mutex::new(LlmTest::Idle)),
+            last_music_key: None,
         }
     }
 }
 
 #[derive(Resource, Default)]
 struct SettingsEntities {
-    pages: [Option<Entity>; 6],
-    nav_bg: [Option<Entity>; 6],
-    nav_text: [Option<Entity>; 6],
+    pages: [Option<Entity>; 7],
+    nav_bg: [Option<Entity>; 7],
+    nav_text: [Option<Entity>; 7],
     fill: [Option<Entity>; 4],
     knob: [Option<Entity>; 4],
     pct: [Option<Entity>; 4],
@@ -113,7 +120,7 @@ struct SettingsEntities {
     quality_label: Option<Entity>,
     net_status: Option<Entity>,
     net_latency: Option<Entity>,
-    llm_text: [Option<Entity>; 3],
+    llm_text: [Option<Entity>; 4],
     llm_status: Option<Entity>,
     bar_fill: [Option<Entity>; 3],
     bar_pct: [Option<Entity>; 3],
@@ -121,6 +128,12 @@ struct SettingsEntities {
     wallpaper_toggle_knob: Option<Entity>,
     natural_scroll_toggle_bg: Option<Entity>,
     natural_scroll_toggle_knob: Option<Entity>,
+    music_now_title: Option<Entity>,
+    music_now_sub: Option<Entity>,
+    music_now_status: Option<Entity>,
+    music_mode_label: Option<Entity>,
+    music_track_count: Option<Entity>,
+    music_list: Option<Entity>,
 }
 
 #[derive(Component)]
@@ -172,6 +185,33 @@ enum LlmTest {
 #[derive(Component)]
 struct BarFill;
 
+#[derive(Component)]
+struct MusicScanBtn;
+
+#[derive(Component)]
+struct ModeButton;
+
+#[derive(Component)]
+struct MusicNowTitle;
+
+#[derive(Component)]
+struct MusicNowSub;
+
+#[derive(Component)]
+struct MusicTrackRow(usize);
+
+#[derive(Component)]
+struct MusicNowStatus;
+
+#[derive(Component)]
+struct MusicModeLabelText;
+
+#[derive(Component)]
+struct MusicList;
+
+#[derive(Component)]
+struct MusicTrackCount;
+
 pub struct SettingsPlugin;
 
 impl Plugin for SettingsPlugin {
@@ -190,10 +230,13 @@ impl Plugin for SettingsPlugin {
                     settings_ping_click,
                     settings_poll,
                     settings_sync_ui,
+                    settings_music_click.after(crate::window::WindowFocusSet),
                     settings_llm_click.after(crate::window::WindowFocusSet),
                     settings_llm_input.after(settings_llm_click),
                     settings_llm_ime.after(settings_llm_click),
                     settings_llm_sync,
+                    settings_music_sync,
+                    settings_music_list_rebuild,
                 ),
             );
     }
@@ -202,6 +245,7 @@ impl Plugin for SettingsPlugin {
 pub fn spawn_settings_window(parent: &mut ChildSpawnerCommands, fonts: &N3riFonts) {
     let window_entity = spawn_window(parent, "设置", "settings", 820.0, 620.0, fonts);
 
+    let settings = UserSettings::load();
     let mut ents = SettingsEntities::default();
     let mut state = SettingsState::default();
     start_ping(&state.ping);
@@ -263,16 +307,17 @@ pub fn spawn_settings_window(parent: &mut ChildSpawnerCommands, fonts: &N3riFont
                             },
                         ))
                         .with_children(|content| {
-                        let settings = UserSettings::load();
                         ents.pages[0] =
                             Some(spawn_sound_page(content, fonts, &settings, &mut ents));
                         ents.pages[1] =
+                            Some(spawn_music_page(content, fonts, &settings, &mut ents, &mut state));
+                        ents.pages[2] =
                             Some(spawn_display_page(content, fonts, &settings, &mut ents));
-                        ents.pages[2] = Some(spawn_network_page(content, fonts, &mut ents));
-                        ents.pages[3] =
+                        ents.pages[3] = Some(spawn_network_page(content, fonts, &mut ents));
+                        ents.pages[4] =
                             Some(spawn_touch_page(content, fonts, &settings, &mut ents));
-                        ents.pages[4] = Some(spawn_system_page(content, fonts, &mut ents));
-                        ents.pages[5] =
+                        ents.pages[5] = Some(spawn_system_page(content, fonts, &mut ents));
+                        ents.pages[6] =
                             Some(spawn_model_page(content, fonts, &mut ents, &mut state));
                         });
                     });
@@ -367,11 +412,290 @@ fn spawn_sound_page(
             ents.toggle_bg[ch as usize] = vol.toggle_bg;
             ents.toggle_knob[ch as usize] = vol.toggle_knob;
         }
-
-        divider(page);
     });
 
     page_e
+}
+
+fn spawn_music_page(
+    parent: &mut ChildSpawnerCommands,
+    fonts: &N3riFonts,
+    settings: &UserSettings,
+    ents: &mut SettingsEntities,
+    state: &mut SettingsState,
+) -> Entity {
+    let page_e = parent
+        .spawn((
+            SettingsPage,
+            Node {
+                width: Val::Percent(100.0),
+                flex_direction: FlexDirection::Column,
+                row_gap: Val::Px(16.0),
+                ..default()
+            },
+        ))
+        .id();
+
+    parent.commands().entity(page_e).with_children(|page| {
+        page_header(page, fonts, "音乐歌单", "扫描本地音频文件夹播放");
+        spawn_now_playing_card(page, fonts, settings, ents);
+        spawn_dir_row(page, fonts, state, ents);
+        spawn_track_list_container(page, ents);
+    });
+
+    page_e
+}
+
+fn spawn_now_playing_card(
+    parent: &mut ChildSpawnerCommands,
+    fonts: &N3riFonts,
+    settings: &UserSettings,
+    ents: &mut SettingsEntities,
+) {
+    parent
+        .spawn(Node {
+            width: Val::Percent(100.0),
+            flex_direction: FlexDirection::Column,
+            padding: UiRect::all(Val::Px(14.0)),
+            border_radius: BorderRadius::all(Val::Px(10.0)),
+            row_gap: Val::Px(8.0),
+            ..default()
+        })
+        .with_children(|card| {
+            let title_e = card
+                .spawn((
+                    MusicNowTitle,
+                    Text::new(""),
+                    TextFont {
+                        font: FontSource::Handle(fonts.default.clone()),
+                        font_size: FontSize::Px(16.0),
+                        ..default()
+                    },
+                    TextColor(TEXT_MAIN),
+                ))
+                .id();
+            ents.music_now_title = Some(title_e);
+
+            let sub_e = card
+                .spawn((
+                    MusicNowSub,
+                    Text::new(""),
+                    TextFont {
+                        font: FontSource::Handle(fonts.default.clone()),
+                        font_size: FontSize::Px(12.0),
+                        ..default()
+                    },
+                    TextColor(TEXT_DIM),
+                ))
+                .id();
+            ents.music_now_sub = Some(sub_e);
+
+            let status_e = card
+                .spawn((
+                    MusicNowStatus,
+                    Text::new(""),
+                    TextFont {
+                        font: FontSource::Handle(fonts.default.clone()),
+                        font_size: FontSize::Px(12.0),
+                        ..default()
+                    },
+                    TextColor(TEXT_DIM),
+                ))
+                .id();
+            ents.music_now_status = Some(status_e);
+
+            let mode_label = PlayMode::from_u8(settings.music_mode).label();
+            card.spawn((
+                Node {
+                    flex_direction: FlexDirection::Row,
+                    align_items: AlignItems::Center,
+                    column_gap: Val::Px(6.0),
+                    ..default()
+                },
+            ))
+            .with_children(|row| {
+                row.spawn((
+                    ModeButton,
+                    Button,
+                    Node {
+                        height: Val::Px(28.0),
+                        padding: UiRect::axes(Val::Px(12.0), Val::Px(0.0)),
+                        align_items: AlignItems::Center,
+                        border_radius: BorderRadius::all(Val::Px(6.0)),
+                        border: UiRect::all(Val::Px(1.0)),
+                        ..default()
+                    },
+                    BorderColor::all(BUTTON_BORDER_COLOR),
+                    BackgroundColor(Color::srgba(0.04, 0.08, 0.14, 0.8)),
+                ))
+                .with_children(|b| {
+                    let mode_e = b
+                        .spawn((
+                            MusicModeLabelText,
+                            Text::new(mode_label),
+                            TextFont {
+                                font: FontSource::Handle(fonts.default.clone()),
+                                font_size: FontSize::Px(12.0),
+                                ..default()
+                            },
+                            TextColor(TEXT_MAIN),
+                        ))
+                        .id();
+                    ents.music_mode_label = Some(mode_e);
+                });
+            });
+
+            let count_e = card
+                .spawn((
+                    MusicTrackCount,
+                    Text::new(""),
+                    TextFont {
+                        font: FontSource::Handle(fonts.default.clone()),
+                        font_size: FontSize::Px(11.0),
+                        ..default()
+                    },
+                    TextColor(TEXT_DIM),
+                ))
+                .id();
+            ents.music_track_count = Some(count_e);
+        });
+}
+
+fn spawn_dir_row(
+    parent: &mut ChildSpawnerCommands,
+    fonts: &N3riFonts,
+    state: &SettingsState,
+    ents: &mut SettingsEntities,
+) {
+    parent
+        .spawn(Node {
+            width: Val::Percent(100.0),
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            column_gap: Val::Px(10.0),
+            ..default()
+        })
+        .with_children(|row| {
+            row.spawn((
+                Text::new("目录"),
+                TextFont {
+                    font: FontSource::Handle(fonts.default.clone()),
+                    font_size: FontSize::Px(13.0),
+                    ..default()
+                },
+                TextColor(TEXT_MAIN),
+                Node {
+                    width: Val::Px(80.0),
+                    ..default()
+                },
+            ));
+
+            let mut shown = state.llm_form[3].clone();
+            if state.llm_focus == Some(3) {
+                shown.push('▏');
+            }
+            row.spawn((
+                LlmInput(3),
+                Button,
+                Node {
+                    flex_grow: 1.0,
+                    height: Val::Px(32.0),
+                    align_items: AlignItems::Center,
+                    padding: UiRect::left(Val::Px(10.0)),
+                    border: UiRect::all(Val::Px(1.0)),
+                    border_radius: BorderRadius::all(Val::Px(6.0)),
+                    overflow: Overflow::hidden(),
+                    ..default()
+                },
+                BackgroundColor(Color::srgba(0.04, 0.08, 0.14, 0.8)),
+                BorderColor::all(if state.llm_focus == Some(3) {
+                    ACCENT
+                } else {
+                    BUTTON_BORDER_COLOR
+                }),
+            ))
+            .with_children(|box_| {
+                let t_e = box_
+                    .spawn((
+                        LlmInputText,
+                        Text::new(shown),
+                        TextFont {
+                            font: FontSource::Handle(fonts.default.clone()),
+                            font_size: FontSize::Px(13.0),
+                            ..default()
+                        },
+                        TextColor(TEXT_MAIN),
+                    ))
+                    .id();
+                ents.llm_text[3] = Some(t_e);
+            });
+
+            row.spawn((
+                MusicScanBtn,
+                Button,
+                Node {
+                    height: Val::Px(32.0),
+                    padding: UiRect::axes(Val::Px(14.0), Val::Px(0.0)),
+                    align_items: AlignItems::Center,
+                    justify_content: JustifyContent::Center,
+                    border_radius: BorderRadius::all(Val::Px(6.0)),
+                    border: UiRect::all(Val::Px(1.0)),
+                    ..default()
+                },
+                BorderColor::all(BUTTON_BORDER_COLOR),
+            ))
+            .with_children(|b| {
+                b.spawn((
+                    Text::new("扫描"),
+                    TextFont {
+                        font: FontSource::Handle(fonts.default.clone()),
+                        font_size: FontSize::Px(13.0),
+                        ..default()
+                    },
+                    TextColor(TEXT_MAIN),
+                ));
+            });
+        });
+}
+
+/// 曲目列表的固定视口内嵌滚动区。行超高后自然出现列表自身的滚动条，
+/// 与整页滚动相互独立。
+const TRACK_LIST_VIEWPORT_H: f32 = 300.0;
+
+fn spawn_track_list_container(parent: &mut ChildSpawnerCommands, ents: &mut SettingsEntities) {
+    let area_e = parent
+        .spawn((
+            ScrollableArea::default(),
+            Node {
+                width: Val::Percent(100.0),
+                height: Val::Px(TRACK_LIST_VIEWPORT_H),
+                align_items: AlignItems::FlexStart,
+                overflow: Overflow::hidden(),
+                ..default()
+            },
+        ))
+        .id();
+
+    parent.commands().entity(area_e).with_children(|a| {
+        crate::scroll::spawn_scrollbar(a, area_e);
+    });
+
+    parent.commands().entity(area_e).with_children(|area| {
+        let content_e = area
+            .spawn((
+                MusicList,
+                ScrollContent,
+                Node {
+                    width: Val::Percent(100.0),
+                    flex_direction: FlexDirection::Column,
+                    padding: UiRect::right(Val::Px(8.0)),
+                    row_gap: Val::Px(2.0),
+                    ..default()
+                },
+            ))
+            .id();
+        ents.music_list = Some(content_e);
+    });
 }
 
 fn spawn_volume_row(
@@ -963,17 +1287,6 @@ fn page_header(parent: &mut ChildSpawnerCommands, fonts: &N3riFonts, title: &str
         });
 }
 
-fn divider(parent: &mut ChildSpawnerCommands) {
-    parent.spawn((
-        Node {
-            width: Val::Percent(100.0),
-            height: Val::Px(1.0),
-            ..default()
-        },
-        BackgroundColor(DIVIDER),
-    ));
-}
-
 fn start_ping(ping: &Arc<Mutex<PingState>>) {
     {
         let mut guard = ping.lock().unwrap();
@@ -1087,13 +1400,18 @@ fn settings_nav(
     mouse: Res<ButtonInput<MouseButton>>,
     nav_query: Query<(&SettingsNavItem, &Interaction)>,
     mut state: ResMut<SettingsState>,
+    mut owner: ResMut<TextInputOwner>,
 ) {
     if !mouse.just_pressed(MouseButton::Left) {
         return;
     }
     for (nav, interaction) in nav_query.iter() {
-        if *interaction == Interaction::Pressed {
+        if *interaction == Interaction::Pressed && state.tab != nav.0 {
             state.tab = nav.0;
+            state.llm_focus = None;
+            if matches!(owner.0, TextInputFocus::Settings(_)) {
+                owner.0 = TextInputFocus::None;
+            }
         }
     }
 }
@@ -1658,7 +1976,7 @@ fn spawn_model_page(
     page_e
 }
 
-fn llm_config_from_form(form: &[String; 3]) -> LlmConfig {
+fn llm_config_from_form(form: &[String; 4]) -> LlmConfig {
     LlmConfig {
         base_url: form[0].clone(),
         model: form[1].clone(),
@@ -1781,7 +2099,7 @@ fn settings_llm_sync(
     ents: Res<SettingsEntities>,
     mut text_query: Query<&mut Text>,
 ) {
-    for i in 0..3usize {
+    for i in 0..4usize {
         if let Some(e) = ents.llm_text[i] {
             if let Ok(mut text) = text_query.get_mut(e) {
                 let focused = state.llm_focus == Some(i);
@@ -1812,4 +2130,166 @@ fn settings_llm_sync(
             }
         }
     }
+}
+
+fn settings_music_click(
+    mouse: Res<ButtonInput<MouseButton>>,
+    scan_btn: Query<&Interaction, With<MusicScanBtn>>,
+    mode_btn: Query<&Interaction, With<ModeButton>>,
+    rows: Query<(&MusicTrackRow, &Interaction)>,
+    mut state: ResMut<SettingsState>,
+    status: Res<MusicStatus>,
+    mut commands: MessageWriter<MusicCommand>,
+) {
+    if !mouse.just_pressed(MouseButton::Left) {
+        return;
+    }
+    for interaction in scan_btn.iter() {
+        if *interaction == Interaction::Pressed {
+            let path = state.llm_form[3].trim().to_string();
+            if !path.is_empty() {
+                commands.write(MusicCommand::Scan(std::path::PathBuf::from(&path)));
+                state.last_music_key = None;
+            }
+        }
+    }
+    for interaction in mode_btn.iter() {
+        if *interaction == Interaction::Pressed {
+            let next = match status.mode {
+                PlayMode::Sequential => PlayMode::Shuffle,
+                PlayMode::Shuffle => PlayMode::SingleLoop,
+                PlayMode::SingleLoop => PlayMode::Sequential,
+            };
+            commands.write(MusicCommand::SetMode(next));
+        }
+    }
+    for (MusicTrackRow(i), interaction) in rows.iter() {
+        if *interaction == Interaction::Pressed {
+            commands.write(MusicCommand::Play(*i));
+        }
+    }
+}
+
+fn settings_music_sync(
+    ents: Res<SettingsEntities>,
+    library: Res<MusicLibrary>,
+    status: Res<MusicStatus>,
+    mut text_query: Query<&mut Text>,
+) {
+    let current_idx = status.current;
+    let has_tracks = !library.is_empty();
+    let current_valid = current_idx.is_some_and(|i| i < library.0.len());
+
+    let title = if current_valid {
+        let i = current_idx.unwrap();
+        library.0[i].title.clone()
+    } else if has_tracks {
+        "点击曲目播放".to_string()
+    } else {
+        "未在播放".to_string()
+    };
+    let sub = if current_valid {
+        let i = current_idx.unwrap();
+        let a = &library.0[i].artist;
+        if a.is_empty() { "未知艺术家".to_string() } else { a.clone() }
+    } else {
+        "桌面内置音乐".to_string()
+    };
+    let count = if has_tracks {
+        format!("共 {} 首曲目", library.0.len())
+    } else {
+        "未扫描到音频文件".to_string()
+    };
+
+    let targets = [
+        (ents.music_now_title, title),
+        (ents.music_now_sub, sub),
+        (
+            ents.music_now_status,
+            if status.playing { "播放中" } else { "已暂停" }.to_string(),
+        ),
+        (ents.music_mode_label, status.mode.label().to_string()),
+        (ents.music_track_count, count),
+    ];
+    for (target_e, target) in targets {
+        if let Some(e) = target_e {
+            if let Ok(mut text) = text_query.get_mut(e) {
+                if **text != target {
+                    **text = target;
+                }
+            }
+        }
+    }
+}
+
+fn settings_music_list_rebuild(
+    mut commands: Commands,
+    fonts: Res<N3riFonts>,
+    library: Res<MusicLibrary>,
+    status: Res<MusicStatus>,
+    ents: Res<SettingsEntities>,
+    mut state: ResMut<SettingsState>,
+) {
+    let Some(list_e) = ents.music_list else {
+        return;
+    };
+
+    let new_fp = if library.is_empty() {
+        String::new()
+    } else {
+        let first = library.0.first().map(|t| t.path.to_string_lossy().into_owned()).unwrap_or_default();
+        let last = library.0.last().map(|t| t.path.to_string_lossy().into_owned()).unwrap_or_default();
+        format!(
+            "{}|{}|{}|{:?}|{}",
+            library.0.len(),
+            first,
+            last,
+            status.current,
+            status.playing
+        )
+    };
+
+    if state.last_music_key.as_deref() == Some(new_fp.as_str()) {
+        return;
+    }
+
+    commands.entity(list_e).despawn_children();
+
+    for (i, track) in library.0.iter().enumerate() {
+        let title = track.title.clone();
+        let is_current = status.current == Some(i);
+        let bg = if is_current { Color::srgba(0.2, 0.35, 0.55, 0.6) } else { Color::NONE };
+        let label = if track.artist.is_empty() {
+            title.clone()
+        } else {
+            format!("{} — {}", title, track.artist)
+        };
+        commands.entity(list_e).with_children(|list| {
+            list.spawn((
+                MusicTrackRow(i),
+                Button,
+                Node {
+                    width: Val::Percent(100.0),
+                    height: Val::Px(34.0),
+                    align_items: AlignItems::Center,
+                    padding: UiRect::left(Val::Px(10.0)),
+                    border_radius: BorderRadius::all(Val::Px(6.0)),
+                    ..default()
+                },
+                BackgroundColor(bg),
+            ))
+            .with_children(|row| {
+                row.spawn((
+                    Text::new(label),
+                    TextFont {
+                        font: FontSource::Handle(fonts.default.clone()),
+                        font_size: FontSize::Px(13.0),
+                        ..default()
+                    },
+                    TextColor(TEXT_MAIN),
+                ));
+            });
+        });
+    }
+    state.last_music_key = Some(new_fp);
 }

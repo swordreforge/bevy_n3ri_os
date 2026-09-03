@@ -43,6 +43,12 @@ pub struct UserSettings {
     /// 自然滚动开关（设置 → 触控）；开启时壁纸模式触摸板滚动方向反转（内容跟随手指）
     #[serde(default = "default_true")]
     pub natural_scroll: bool,
+    /// 外部音乐歌单目录（设置 → 声音 → 音乐歌单）；None = 未配置（回退内嵌 BGM）
+    #[serde(default)]
+    pub music_dir: Option<String>,
+    /// 播放模式 0=顺序 1=随机 2=单曲循环
+    #[serde(default)]
+    pub music_mode: u8,
 }
 
 fn default_true() -> bool {
@@ -57,6 +63,8 @@ impl Default for UserSettings {
             quality_idx: 0,
             wallpaper_enabled: false,
             natural_scroll: true,
+            music_dir: None,
+            music_mode: 0,
         }
     }
 }

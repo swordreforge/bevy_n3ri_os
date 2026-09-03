@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Instant;
 
+use crate::cursor::CursorPosition;
 use crate::font::N3riFonts;
 use crate::scroll::{ScrollableArea, ScrollContent};
 use crate::window::spawn_window;
@@ -1195,7 +1196,7 @@ fn settings_ping_click(
 
 fn settings_slider_drag(
     mouse: Res<ButtonInput<MouseButton>>,
-    windows: Query<&Window>,
+    cursor: Res<CursorPosition>,
     slider_query: Query<(
         &VolumeSlider,
         &Interaction,
@@ -1209,17 +1210,15 @@ fn settings_slider_drag(
     if !mouse.pressed(MouseButton::Left) {
         return;
     }
-    let Ok(bevy_window) = windows.single() else {
+    if !cursor.active {
         return;
-    };
+    }
+    let cursor = cursor.physical;
     let mut changed = false;
     for (slider, interaction, node, transform) in slider_query.iter() {
         if *interaction != Interaction::Pressed {
             continue;
         }
-        let Some(cursor) = bevy_window.physical_cursor_position() else {
-            continue;
-        };
         let Some(local) = transform.try_inverse().map(|t| t.transform_point2(cursor)) else {
             continue;
         };

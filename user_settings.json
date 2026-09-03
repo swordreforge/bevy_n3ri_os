@@ -1,7 +1,7 @@
 {
   "volumes": [
-    100,
-    100,
+    94,
+    96,
     0,
     0
   ],
@@ -11,5 +11,7 @@
     false,
     false
   ],
-  "quality_idx": 1
+  "quality_idx": 1,
+  "wallpaper_enabled": false,
+  "natural_scroll": true
 }

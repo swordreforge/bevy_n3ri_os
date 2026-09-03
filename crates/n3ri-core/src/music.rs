@@ -87,6 +87,7 @@ impl Default for MusicStatus {
 pub enum MusicCommand {
     Scan(PathBuf),
     Play(usize),
+    PlayBuiltin,
     Next,
     Prev,
     SetMode(PlayMode),

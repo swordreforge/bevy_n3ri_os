@@ -49,6 +49,12 @@ pub struct UserSettings {
     /// 播放模式 0=顺序 1=随机 2=单曲循环
     #[serde(default)]
     pub music_mode: u8,
+    /// 播放源偏好：0=内置 BGM，1=外部歌单。None = 未显式选择（默认：有歌单播歌单）
+    #[serde(default)]
+    pub music_source: Option<u8>,
+    /// 歌单中最后播放的曲目路径（仅 music_source=1 时有意义；重启按路径反查 index）
+    #[serde(default)]
+    pub music_track_path: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -65,6 +71,8 @@ impl Default for UserSettings {
             natural_scroll: true,
             music_dir: None,
             music_mode: 0,
+            music_source: None,
+            music_track_path: None,
         }
     }
 }

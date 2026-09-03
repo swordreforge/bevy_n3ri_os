@@ -41,8 +41,10 @@ impl Plugin for MusicPlayerPlugin {
     }
 }
 
-/// Desktop entry: if an external dir is configured and yields tracks, play them;
-/// otherwise fall back to the embedded looping BGM.
+/// Desktop entry: restore the persisted playback choice. Library preferred when a
+/// dir is configured AND the user did not explicitly choose built-in BGM last
+/// session (`music_source != Some(0)`); otherwise play the embedded BGM. The
+/// boot-time builtin fallback is transient and never overwrites a stored choice.
 fn start_music(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
@@ -50,7 +52,7 @@ fn start_music(
     now_playing: Query<Entity, With<NowPlaying>>,
     mut library: ResMut<MusicLibrary>,
     mut status: ResMut<MusicStatus>,
-    settings: Res<UserSettings>,
+    mut settings: ResMut<UserSettings>,
 ) {
     status.mode = PlayMode::from_u8(settings.music_mode);
     let tracks = settings
@@ -61,14 +63,41 @@ fn start_music(
         .unwrap_or_default();
     if !tracks.is_empty() {
         library.0 = tracks;
-        play_track(&mut commands, &mut audio_assets, now_playing, &settings, &library, 0);
-        status.current = Some(0);
-        status.playing = true;
+        if settings.music_source == Some(0) {
+            play_fallback(&mut commands, &asset_server, now_playing, &settings);
+            status.current = None;
+            status.playing = true;
+        } else {
+            let index = resolve_track_index(&library, settings.music_track_path.as_deref())
+                .unwrap_or(0);
+            play_track(&mut commands, &mut audio_assets, now_playing, &mut settings, &library, index);
+            status.current = Some(index);
+            status.playing = true;
+        }
     } else {
         library.0.clear();
         play_fallback(&mut commands, &asset_server, now_playing, &settings);
         status.current = None;
         status.playing = true;
+    }
+}
+
+/// Find the library index whose path matches the persisted playback path.
+fn resolve_track_index(library: &MusicLibrary, stored: Option<&str>) -> Option<usize> {
+    let stored = PathBuf::from(stored?);
+    library.0.iter().position(|t| t.path == stored)
+}
+
+/// Persist which source (0 = builtin BGM, 1 = external library) and, for the
+/// library, the exact track path so a later startup can resume the same song.
+fn persist_source(settings: &mut UserSettings, source: u8, path: Option<&Path>) {
+    if settings.music_source != Some(source)
+        || settings.music_track_path.as_deref()
+            != path.map(|p| p.to_str().unwrap_or_default())
+    {
+        settings.music_source = Some(source);
+        settings.music_track_path = path.map(|p| p.to_string_lossy().into_owned());
+        settings.save();
     }
 }
 
@@ -140,7 +169,7 @@ fn play_track(
     commands: &mut Commands,
     audio_assets: &mut Assets<AudioSource>,
     now_playing: Query<Entity, With<NowPlaying>>,
-    settings: &UserSettings,
+    settings: &mut UserSettings,
     library: &MusicLibrary,
     index: usize,
 ) {
@@ -158,6 +187,7 @@ fn play_track(
         AudioPlayer::new(handle),
         PlaybackSettings::ONCE.with_volume(Volume::Linear(vol)),
     ));
+    persist_source(settings, 1, Some(&track.path));
 }
 
 fn play_fallback(
@@ -192,11 +222,13 @@ fn music_volume(settings: &UserSettings) -> f32 {
     }
 }
 
-/// Consume UI `Scan(dir)` commands.
+/// Consume UI `Scan(dir)` commands. An empty scan falls back to builtin BGM
+/// (transient — never overwrites a stored source choice) instead of going silent.
 fn music_scan(
     mut commands: Commands,
     mut scan: MessageReader<MusicCommand>,
     mut audio_assets: ResMut<Assets<AudioSource>>,
+    asset_server: Res<AssetServer>,
     now_playing: Query<Entity, With<NowPlaying>>,
     mut library: ResMut<MusicLibrary>,
     mut status: ResMut<MusicStatus>,
@@ -213,33 +245,37 @@ fn music_scan(
         settings.save();
         library.0 = tracks;
         if library.is_empty() {
+            play_fallback(&mut commands, &asset_server, now_playing, &settings);
             status.current = None;
-            status.playing = false;
+            status.playing = true;
             continue;
         }
         if changed_dir {
-            play_track(&mut commands, &mut audio_assets, now_playing, &settings, &library, 0);
+            play_track(&mut commands, &mut audio_assets, now_playing, &mut settings, &library, 0);
             status.current = Some(0);
             status.playing = true;
         }
     }
 }
 
-/// Consume UI playback commands (Play/Next/Prev/SetMode).
+/// Consume UI playback commands (Play/PlayBuiltin/Next/Prev/SetMode).
 fn music_control(
     mut commands: Commands,
     mut ctrl: MessageReader<MusicCommand>,
     mut audio_assets: ResMut<Assets<AudioSource>>,
+    asset_server: Res<AssetServer>,
     now_playing: Query<Entity, With<NowPlaying>>,
     library: Res<MusicLibrary>,
     mut status: ResMut<MusicStatus>,
     mut settings: ResMut<UserSettings>,
 ) {
     let mut play_index: Option<usize> = None;
+    let mut play_builtin = false;
     for cmd in ctrl.read() {
         match cmd {
             MusicCommand::Scan(_) => {}
             MusicCommand::Play(i) => play_index = Some(*i),
+            MusicCommand::PlayBuiltin => play_builtin = true,
             MusicCommand::Next => {
                 if !library.is_empty() {
                     let len = library.len();
@@ -261,9 +297,14 @@ fn music_control(
             }
         }
     }
-    if let Some(i) = play_index {
+    if play_builtin {
+        play_fallback(&mut commands, &asset_server, now_playing, &settings);
+        status.current = None;
+        status.playing = true;
+        persist_source(&mut settings, 0, None);
+    } else if let Some(i) = play_index {
         if i < library.len() {
-            play_track(&mut commands, &mut audio_assets, now_playing, &settings, &library, i);
+            play_track(&mut commands, &mut audio_assets, now_playing, &mut settings, &library, i);
             status.current = Some(i);
             status.playing = true;
         }
@@ -278,7 +319,7 @@ fn music_autoplay(
     sinks: Query<(&AudioSink, &PlayingTrack), With<NowPlaying>>,
     library: Res<MusicLibrary>,
     mut status: ResMut<MusicStatus>,
-    settings: Res<UserSettings>,
+    mut settings: ResMut<UserSettings>,
     mut guard: ResMut<AutoplayGuard>,
 ) {
     if !status.playing || library.is_empty() {
@@ -316,7 +357,7 @@ fn music_autoplay(
     };
     match next {
         Some(i) => {
-            play_track(&mut commands, &mut audio_assets, now_playing, &settings, &library, i);
+            play_track(&mut commands, &mut audio_assets, now_playing, &mut settings, &library, i);
             status.current = Some(i);
         }
         None => {

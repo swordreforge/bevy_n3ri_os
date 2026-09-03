@@ -140,6 +140,7 @@ struct SettingsEntities {
     music_mode_label: Option<Entity>,
     music_track_count: Option<Entity>,
     music_list: Option<Entity>,
+    music_builtin_hint: Option<Entity>,
 }
 
 #[derive(Component)]
@@ -205,6 +206,12 @@ struct MusicNowSub;
 
 #[derive(Component)]
 struct MusicTrackRow(usize);
+
+#[derive(Component)]
+struct MusicBuiltinRow;
+
+#[derive(Component)]
+struct MusicBuiltinHint;
 
 #[derive(Component)]
 struct MusicNowStatus;
@@ -447,6 +454,7 @@ fn spawn_music_page(
         spawn_now_playing_card(page, fonts, settings, ents);
         spawn_dir_row(page, fonts, state, ents);
         spawn_music_search_row(page, fonts, state, ents);
+        spawn_music_builtin_row(page, fonts, ents);
         spawn_track_list_container(page, ents);
     });
 
@@ -748,6 +756,54 @@ fn spawn_music_search_row(
                 ents.llm_text[4] = Some(t_e);
             });
         });
+}
+
+fn spawn_music_builtin_row(
+    parent: &mut ChildSpawnerCommands,
+    fonts: &N3riFonts,
+    ents: &mut SettingsEntities,
+) {
+    let row_e = parent
+        .spawn((
+            MusicBuiltinRow,
+            Button,
+            Node {
+                width: Val::Percent(100.0),
+                height: Val::Px(34.0),
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::SpaceBetween,
+                padding: UiRect::horizontal(Val::Px(10.0)),
+                border_radius: BorderRadius::all(Val::Px(6.0)),
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.04, 0.08, 0.14, 0.8)),
+        ))
+        .id();
+
+    parent.commands().entity(row_e).with_children(|row| {
+        row.spawn((
+            Text::new("♫ 内置背景音乐"),
+            TextFont {
+                font: FontSource::Handle(fonts.default.clone()),
+                font_size: FontSize::Px(13.0),
+                ..default()
+            },
+            TextColor(TEXT_MAIN),
+        ));
+        let hint_e = row
+            .spawn((
+                MusicBuiltinHint,
+                Text::new(""),
+                TextFont {
+                    font: FontSource::Handle(fonts.default.clone()),
+                    font_size: FontSize::Px(11.0),
+                    ..default()
+                },
+                TextColor(TEXT_DIM),
+            ))
+            .id();
+        ents.music_builtin_hint = Some(hint_e);
+    });
 }
 
 fn spawn_track_list_container(parent: &mut ChildSpawnerCommands, ents: &mut SettingsEntities) {
@@ -2243,6 +2299,7 @@ fn settings_music_click(
     scan_btn: Query<&Interaction, With<MusicScanBtn>>,
     mode_btn: Query<&Interaction, With<ModeButton>>,
     rows: Query<(&MusicTrackRow, &Interaction)>,
+    builtin_row: Query<&Interaction, With<MusicBuiltinRow>>,
     mut state: ResMut<SettingsState>,
     status: Res<MusicStatus>,
     mut commands: MessageWriter<MusicCommand>,
@@ -2269,6 +2326,14 @@ fn settings_music_click(
             commands.write(MusicCommand::SetMode(next));
         }
     }
+    for interaction in builtin_row.iter() {
+        if *interaction == Interaction::Pressed {
+            let already_builtin = status.playing && status.current.is_none();
+            if !already_builtin {
+                commands.write(MusicCommand::PlayBuiltin);
+            }
+        }
+    }
     for (MusicTrackRow(i), interaction) in rows.iter() {
         if *interaction == Interaction::Pressed {
             commands.write(MusicCommand::Play(*i));
@@ -2282,14 +2347,18 @@ fn settings_music_sync(
     status: Res<MusicStatus>,
     state: Res<SettingsState>,
     mut text_query: Query<&mut Text>,
+    mut builtin_bg: Query<&mut BackgroundColor, With<MusicBuiltinRow>>,
 ) {
     let current_idx = status.current;
     let has_tracks = !library.is_empty();
     let current_valid = current_idx.is_some_and(|i| i < library.0.len());
+    let builtin_active = status.playing && current_idx.is_none();
 
     let title = if current_valid {
         let i = current_idx.unwrap();
         library.0[i].title.clone()
+    } else if builtin_active {
+        "内置背景音乐".to_string()
     } else if has_tracks {
         "点击曲目播放".to_string()
     } else {
@@ -2299,6 +2368,10 @@ fn settings_music_sync(
         let i = current_idx.unwrap();
         let a = &library.0[i].artist;
         if a.is_empty() { "未知艺术家".to_string() } else { a.clone() }
+    } else if builtin_active {
+        "系统内置 · 循环播放".to_string()
+    } else if has_tracks {
+        "点击曲目或内置行开始播放".to_string()
     } else {
         "桌面内置音乐".to_string()
     };
@@ -2322,8 +2395,18 @@ fn settings_music_sync(
                 .count();
             format!("匹配 {matched} / {} 首曲目", library.0.len())
         }
+    } else if builtin_active {
+        "内置循环播放中".to_string()
     } else {
         "未扫描到音频文件".to_string()
+    };
+
+    let hint = if builtin_active {
+        "播放中".to_string()
+    } else if current_valid {
+        "点击切回".to_string()
+    } else {
+        "点击播放".to_string()
     };
 
     let targets = [
@@ -2335,6 +2418,7 @@ fn settings_music_sync(
         ),
         (ents.music_mode_label, status.mode.label().to_string()),
         (ents.music_track_count, count),
+        (ents.music_builtin_hint, hint),
     ];
     for (target_e, target) in targets {
         if let Some(e) = target_e {
@@ -2343,6 +2427,17 @@ fn settings_music_sync(
                     **text = target;
                 }
             }
+        }
+    }
+
+    let target_bg = if builtin_active {
+        NAV_HIGHLIGHT
+    } else {
+        Color::srgba(0.04, 0.08, 0.14, 0.8)
+    };
+    for mut bg in builtin_bg.iter_mut() {
+        if bg.0 != target_bg {
+            bg.0 = target_bg;
         }
     }
 }

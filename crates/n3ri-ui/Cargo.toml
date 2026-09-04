@@ -28,5 +28,17 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 smol_str = "0.2"
 
+# ── 浏览器（Servo 嵌入，Linux CPU readback 路径）──
+servo = { git = "https://github.com/servo/servo", branch = "release/v0.5", default-features = false, features = ["baked-in-resources", "bundled_freetype", "js_jit"] }
+# wgpu-graft 适配器（path 直连 refer/，内部 path 依赖 ../grafting，均保持 MPL-2.0 头部）
+servo-wgpu-interop-adapter = { path = "../../refer/wgpu-graft/servo-wgpu-interop-adapter", features = ["servo"] }
+rustls = "0.23"
+url = "2"
+euclid = "0.22.11"
+pollster = "0.4"
+# 直接使用 wgpu/winit 类型（与 bevy 0.19 / refer 适配器统一版本）
+wgpu = "29"
+winit = "0.30"
+
 [features]
 embed-content = []

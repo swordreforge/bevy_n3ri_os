@@ -1,51 +1,1208 @@
-//! 浏览器 —— 占位窗口：告知用户 Web 视图未实现（见 AGENTS.md Non-Goals）。
+// Copyright 2026 Mark Alan Boykin (adapted from wgpu-graft demo-servo-bevy)
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+// SPDX-License-Identifier: MPL-2.0
+#![allow(clippy::type_complexity)]
+//
+// n3ri_os 真实浏览器：Servo 引擎嵌入桌面窗口（Linux CPU readback 路径）。
+// Servo 经 surfman/GL 离屏渲染 → read_full_frame() 读回 RGBA →
+// render world 用 queue.write_texture 上传到 ImageNode 的稳定纹理。
 
+#[path = "browser_keyutils.rs"]
+mod browser_keyutils;
+
+use bevy::asset::RenderAssetUsages;
+use bevy::ecs::message::MessageReader;
+use bevy::ecs::relationship::Relationship;
+use bevy::image::Image;
+use bevy::input::ButtonState;
+use bevy::input::keyboard::{Key as BevyKey, KeyboardInput};
+use bevy::input::mouse::{MouseButtonInput, MouseScrollUnit, MouseWheel};
 use bevy::prelude::*;
-use bevy::text::{FontSource, FontSize};
+use bevy::render::render_asset::RenderAssets;
+use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat, TextureUsages};
+use bevy::render::renderer::RenderQueue;
+use bevy::render::texture::GpuImage;
+use bevy::render::{Extract, ExtractSchedule, Render, RenderApp, RenderSystems};
+use bevy::text::{FontSize, TextColor, TextFont};
+use bevy::window::Ime;
+use euclid::Scale;
+use rustls::crypto::aws_lc_rs;
+use servo::{
+    CompositionEvent, CompositionState, CreateNewWebViewRequest, DevicePoint, EmbedderControl,
+    EmbedderControlId, EventLoopWaker, ImeEvent, InputEvent, MouseButton as ServoMouseButton,
+    MouseButtonAction, MouseButtonEvent, MouseLeftViewportEvent, MouseMoveEvent, Servo, ServoBuilder,
+    WebView, WebViewBuilder, WebViewDelegate, WheelDelta, WheelEvent, WheelMode,
+};
+use servo_wgpu_interop_adapter::ServoWgpuInteropAdapter;
+use std::cell::RefCell;
+use std::rc::Rc;
+use url::Url;
+use winit::dpi::PhysicalSize;
 
+use crate::apps::terminal::{copy_text, paste_text};
+use crate::cursor::CursorPosition;
+use crate::dock::{AppVisible, Dock};
 use crate::font::N3riFonts;
-use crate::window::spawn_window;
+use crate::input_focus::{TextInputFocus, TextInputOwner};
+use crate::topbar::FocusedTitle;
+use crate::window::{AppWindow, spawn_window};
 
-const WIN_W: f32 = 480.0;
-const WIN_H: f32 = 320.0;
+const BROWSER_TITLE: &str = "浏览器";
+const WIN_W: f32 = 1100.0;
+const WIN_H: f32 = 700.0;
 
-const CK_BROWN: Color = Color::srgb(0.42, 0.28, 0.19);
-const CK_DIM: Color = Color::srgba(0.42, 0.28, 0.19, 0.65);
-const CK_AMBER: Color = Color::srgb(0.84, 0.55, 0.32);
+const DEFAULT_HOME: &str = "https://www.bing.com";
+const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
+const SEED_SIZE: (u32, u32) = (1024, 600);
+/// 默认页面缩放（浏览器式 zoom，Servo 范围 0.1~10.0；等价 Ctrl+'+' × 2.5）
+const PAGE_ZOOM: f32 = 2.5;
 
-pub fn spawn_browser(parent: &mut ChildSpawnerCommands, fonts: &N3riFonts) {
-    let window_e = spawn_window(parent, "浏览器", "browser", WIN_W, WIN_H, fonts);
-    parent.commands().entity(window_e).with_children(|win| {
-        win.spawn((Node {
-            width: Val::Percent(100.0),
-            flex_grow: 1.0,
-            flex_direction: FlexDirection::Column,
-            align_items: AlignItems::Center,
-            justify_content: JustifyContent::Center,
-            row_gap: Val::Px(10.0),
-            padding: UiRect::horizontal(Val::Px(24.0)),
-            ..default()
-        }, BackgroundColor(Color::srgba(1.0, 0.97, 0.94, 0.96))))
-        .with_children(|page| {
-            page.spawn((
-                Text::new("浏览器暂未实现"),
-                TextFont { font: ck_font(fonts), font_size: FontSize::Px(22.0), ..default() },
-                TextColor(CK_BROWN),
-            ));
-            page.spawn((
-                Text::new("n3ri_os 未内嵌 Web 视图——复刻官方内嵌浏览器需要 bevy_cef / bevy_wry，成本过高，暂不引入。"),
-                TextFont { font: ck_font(fonts), font_size: FontSize::Px(13.0), ..default() },
-                TextColor(CK_DIM),
-            ));
-            page.spawn((
-                Text::new("先去玩玩蛋糕对决、森林寻宝和国际象棋吧。"),
-                TextFont { font: ck_font(fonts), font_size: FontSize::Px(13.0), ..default() },
-                TextColor(CK_AMBER),
-            ));
-        });
+const TOOLBAR_H: f32 = 36.0;
+const BAR_TEXT_SIZE: f32 = 13.0;
+
+const TEXT_MAIN: Color = Color::srgb(0.86, 0.93, 0.93);
+const TOOLBAR_BG: Color = Color::srgb(0.05, 0.08, 0.14);
+const FIELD_BG: Color = Color::srgb(0.03, 0.05, 0.09);
+const PAGE_BG: Color = Color::srgb(0.13, 0.15, 0.19);
+const NAV_BG: Color = Color::srgb(0.16, 0.20, 0.27);
+const NAV_BG_HOT: Color = Color::srgb(0.24, 0.30, 0.40);
+const NAV_BG_DOWN: Color = Color::srgb(0.12, 0.15, 0.21);
+
+#[derive(Component)]
+pub struct BrowserPage;
+
+#[derive(Component)]
+struct BrowserNav(u8);
+
+#[derive(Component)]
+struct UrlField;
+
+#[derive(Component)]
+struct GoButton;
+
+#[derive(Component)]
+struct UrlLabel;
+
+#[derive(Resource, Default)]
+pub struct CurrentUrl(String);
+
+#[derive(Resource)]
+struct HomeUrl(String);
+
+#[derive(Resource, Default)]
+struct PendingNav(Option<NavCommand>);
+
+enum NavCommand {
+    Load(String),
+    Back,
+    Forward,
+    Reload,
+    Home,
+}
+
+#[derive(Resource)]
+struct BrowserFocus {
+    page: bool,
+}
+
+impl Default for BrowserFocus {
+    fn default() -> Self {
+        Self { page: true }
+    }
+}
+
+#[derive(Resource, Default)]
+struct UrlBarState {
+    editing: bool,
+    select_all: bool,
+    text: String,
+    composing: String,
+}
+
+impl UrlBarState {
+    fn visible(&self) -> String {
+        format!("{}{}", self.text, self.composing)
+    }
+    fn replace_all(&mut self, content: String) {
+        self.text = content;
+        self.composing.clear();
+        self.select_all = false;
+    }
+    fn clear_selection(&mut self) {
+        self.text.clear();
+        self.composing.clear();
+        self.select_all = false;
+    }
+}
+
+#[derive(Resource, Default)]
+pub struct BrowserImeAnchor {
+    pub enabled: bool,
+    pub pos: Vec2,
+}
+
+#[derive(Resource, Default)]
+pub struct BrowserLaunch(pub bool);
+
+#[derive(Resource, Clone)]
+struct BrowserImageHandle(Handle<Image>);
+
+struct BrowserEngine {
+    servo: Servo,
+    webview: WebView,
+    interop: ServoWgpuInteropAdapter,
+    size: PhysicalSize<u32>,
+    delegate: Rc<BrowserDelegate>,
+}
+
+#[derive(Default)]
+struct BrowserHost(Option<BrowserEngine>);
+
+#[derive(Resource, Default, Clone)]
+pub struct BrowserFrame(Option<FrameDesc>);
+
+#[derive(Clone)]
+struct FrameDesc {
+    pixels: Vec<u8>,
+    width: u32,
+    height: u32,
+}
+
+#[derive(Resource, Default, Clone)]
+struct ExtractedFrame(Option<FrameDesc>);
+
+#[derive(Resource, Default, Clone, Copy)]
+struct ExtractedImageId(Option<AssetId<Image>>);
+
+struct ImeUi {
+    control_id: Option<EmbedderControlId>,
+    rect_min: Option<(f32, f32)>,
+}
+
+struct BrowserDelegate {
+    rendering_context: Rc<dyn servo::RenderingContext>,
+    pending: RefCell<Vec<WebView>>,
+    ime: RefCell<ImeUi>,
+    url: RefCell<Option<String>>,
+}
+
+impl BrowserDelegate {
+    fn new(rendering_context: Rc<dyn servo::RenderingContext>, initial_url: String) -> Self {
+        Self {
+            rendering_context,
+            pending: RefCell::new(Vec::new()),
+            ime: RefCell::new(ImeUi {
+                control_id: None,
+                rect_min: None,
+            }),
+            url: RefCell::new(Some(initial_url)),
+        }
+    }
+    fn take_pending(&self) -> Option<WebView> {
+        self.pending.borrow_mut().pop()
+    }
+}
+
+impl WebViewDelegate for BrowserDelegate {
+    fn notify_url_changed(&self, _webview: WebView, url: Url) {
+        *self.url.borrow_mut() = Some(url.to_string());
+    }
+    fn notify_crashed(&self, _webview: WebView, reason: String, backtrace: Option<String>) {
+        error!("[browser] Servo CRASH: {reason}");
+        if let Some(bt) = backtrace {
+            error!("{bt}");
+        }
+    }
+    fn request_create_new(&self, parent_webview: WebView, request: CreateNewWebViewRequest) {
+        let view = request
+            .builder(self.rendering_context.clone())
+            .hidpi_scale_factor(Scale::new(1.0))
+            .delegate(parent_webview.delegate())
+            .build();
+        self.pending.borrow_mut().push(view);
+    }
+    fn show_embedder_control(&self, _webview: WebView, control: EmbedderControl) {
+        if let EmbedderControl::InputMethod(input) = control {
+            let min = input.position().min;
+            *self.ime.borrow_mut() = ImeUi {
+                control_id: Some(input.id()),
+                rect_min: Some((min.x as f32, min.y as f32)),
+            };
+        }
+    }
+    fn hide_embedder_control(&self, _webview: WebView, control_id: EmbedderControlId) {
+        let mut ime = self.ime.borrow_mut();
+        if ime.control_id == Some(control_id) {
+            ime.control_id = None;
+            ime.rect_min = None;
+        }
+    }
+}
+
+struct NoopWaker;
+
+impl EventLoopWaker for NoopWaker {
+    fn clone_box(&self) -> Box<dyn EventLoopWaker> {
+        Box::new(NoopWaker)
+    }
+    fn wake(&self) {}
+}
+
+fn default_home() -> String {
+    for dir in ["assets", "../assets", "../../assets"] {
+        let file = std::path::Path::new(dir).join("nori/browser/home.html");
+        if file.is_file() {
+            if let Ok(url) = Url::from_file_path(file) {
+                return url.to_string();
+            }
+        }
+    }
+    DEFAULT_HOME.to_string()
+}
+
+fn build_engine(home_url: &str) -> BrowserEngine {
+    let size = PhysicalSize::new(SEED_SIZE.0, SEED_SIZE.1);
+
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+        backends: wgpu::Backends::all(),
+        flags: wgpu::InstanceFlags::default(),
+        memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
+        backend_options: wgpu::BackendOptions::default(),
+        display: None,
+    });
+    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+        power_preference: wgpu::PowerPreference::HighPerformance,
+        force_fallback_adapter: false,
+        compatible_surface: None,
+    }))
+    .expect("no Vulkan/GL adapter for Servo interop (check GPU drivers)");
+    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        label: Some("n3ri-browser-interop"),
+        required_features: wgpu::Features::empty(),
+        required_limits: wgpu::Limits::default(),
+        experimental_features: wgpu::ExperimentalFeatures::disabled(),
+        memory_hints: wgpu::MemoryHints::default(),
+        trace: wgpu::Trace::Off,
+    }))
+    .expect("failed to create Servo interop device");
+
+    let interop = ServoWgpuInteropAdapter::new(device, queue, size)
+        .expect("failed to create Servo interop adapter");
+
+    let servo = ServoBuilder::default()
+        .preferences(servo::Preferences {
+            user_agent: USER_AGENT.to_string(),
+            ..Default::default()
+        })
+        .event_loop_waker(Box::new(NoopWaker))
+        .build();
+    // 不调 servo.setup_logging()：它会 log::set_boxed_logger，而 Bevy LogPlugin
+    // 已注册全局 logger（demo 在 App 创建前调用才不冲突）。Servo 组件的 log 记录
+    // 经 log crate 自动落入 Bevy logger。
+
+    let rendering_context = interop.rendering_context();
+    let delegate = Rc::new(BrowserDelegate::new(rendering_context.clone(), home_url.to_string()));
+    let webview = WebViewBuilder::new(&servo, rendering_context)
+        .url(Url::parse(home_url).expect("invalid home url"))
+        .hidpi_scale_factor(Scale::new(1.0))
+        .delegate(delegate.clone())
+        .build();
+    webview.set_page_zoom(PAGE_ZOOM);
+
+    BrowserEngine {
+        servo,
+        webview,
+        interop,
+        size,
+        delegate,
+    }
+}
+
+pub struct BrowserPlugin;
+
+impl Plugin for BrowserPlugin {
+    fn build(&self, app: &mut App) {
+        let _ = aws_lc_rs::default_provider().install_default();
+
+        app.world_mut().insert_non_send(BrowserHost::default());
+        app.init_resource::<BrowserFrame>()
+            .init_resource::<CurrentUrl>()
+            .init_resource::<BrowserFocus>()
+            .init_resource::<UrlBarState>()
+            .init_resource::<PendingNav>()
+            .init_resource::<BrowserImeAnchor>()
+            .init_resource::<BrowserLaunch>()
+            .insert_resource(HomeUrl(default_home()))
+            .add_systems(Startup, create_placeholder_image)
+            .add_systems(
+                Update,
+                (
+                    browser_launch_window.after(crate::window::WindowFocusSet),
+                    browser_chrome
+                        .after(browser_launch_window)
+                        .after(crate::window::WindowFocusSet),
+                    browser_bar_input
+                        .after(browser_chrome)
+                        .after(crate::window::WindowFocusSet),
+                    browser_page_input
+                        .after(browser_bar_input)
+                        .after(crate::window::WindowFocusSet),
+                    browser_drive
+                        .after(browser_page_input)
+                        .after(crate::window::WindowFocusSet),
+                    browser_resize_texture.after(browser_drive),
+                    browser_ui_sync.after(browser_resize_texture),
+                ),
+            );
+
+        if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
+            render_app
+                .init_resource::<ExtractedFrame>()
+                .init_resource::<ExtractedImageId>()
+                .add_systems(ExtractSchedule, extract_browser_frame)
+                .add_systems(
+                    Render,
+                    inject_browser_frame
+                        .after(RenderSystems::PrepareAssets)
+                        .before(RenderSystems::Queue),
+                );
+        } else {
+            warn!("[browser] RenderApp missing — Servo 帧注入不可用");
+        }
+    }
+}
+
+fn create_placeholder_image(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
+    let mut placeholder = Image::new_uninit(
+        Extent3d {
+            width: SEED_SIZE.0,
+            height: SEED_SIZE.1,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        TextureFormat::Rgba8Unorm,
+        RenderAssetUsages::RENDER_WORLD,
+    );
+    placeholder.texture_descriptor.usage = TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST;
+    commands.insert_resource(BrowserImageHandle(images.add(placeholder)));
+}
+
+fn browser_launch_window(
+    mut launch: ResMut<BrowserLaunch>,
+    pages: Query<Entity, With<BrowserPage>>,
+    dock: Query<&ChildOf, With<Dock>>,
+    image: Res<BrowserImageHandle>,
+    fonts: Res<N3riFonts>,
+    mut commands: Commands,
+) {
+    if !launch.0 {
+        return;
+    }
+    launch.0 = false;
+    if !pages.is_empty() {
+        return;
+    }
+    let Ok(dock_parent) = dock.single() else {
+        return;
+    };
+    let root = dock_parent.get();
+    commands.entity(root).with_children(|parent| {
+        spawn_browser_window(parent, &image.0, &fonts);
     });
 }
 
-fn ck_font(fonts: &N3riFonts) -> FontSource {
-    FontSource::Handle(fonts.default.clone())
+fn spawn_browser_window(
+    parent: &mut ChildSpawnerCommands,
+    image: &Handle<Image>,
+    fonts: &N3riFonts,
+) {
+    let window_e = spawn_window(parent, BROWSER_TITLE, "browser", WIN_W, WIN_H, fonts);
+    let font = fonts.default.clone();
+
+    parent.commands().entity(window_e).with_children(|win| {
+        win.spawn((
+            Node {
+                width: Val::Percent(100.0),
+                height: Val::Px(TOOLBAR_H),
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                padding: UiRect::horizontal(Val::Px(8.0)),
+                column_gap: Val::Px(4.0),
+                ..default()
+            },
+            BackgroundColor(TOOLBAR_BG),
+        ))
+        .with_children(|toolbar| {
+            for (i, glyph) in ["←", "→", "↻", "⌂"].iter().enumerate() {
+                toolbar
+                    .spawn((
+                        BrowserNav(i as u8),
+                        Button,
+                        Node {
+                            width: Val::Px(30.0),
+                            height: Val::Px(24.0),
+                            flex_shrink: 0.0,
+                            border_radius: BorderRadius::all(Val::Px(5.0)),
+                            align_items: AlignItems::Center,
+                            justify_content: JustifyContent::Center,
+                            ..default()
+                        },
+                        BackgroundColor(NAV_BG),
+                    ))
+                    .with_children(|btn| {
+                        btn.spawn((
+                            Text::new(*glyph),
+                            TextFont {
+                                font: FontSource::Handle(font.clone()),
+                                font_size: FontSize::Px(BAR_TEXT_SIZE),
+                                ..default()
+                            },
+                            TextColor(TEXT_MAIN),
+                        ));
+                    });
+            }
+            toolbar
+                .spawn((
+                    UrlField,
+                    Button,
+                    Node {
+                        flex_grow: 1.0,
+                        height: Val::Px(24.0),
+                        border_radius: BorderRadius::all(Val::Px(5.0)),
+                        align_items: AlignItems::Center,
+                        padding: UiRect::horizontal(Val::Px(10.0)),
+                        ..default()
+                    },
+                    BackgroundColor(FIELD_BG),
+                ))
+                .with_children(|field| {
+                    field.spawn((
+                        UrlLabel,
+                        Text::new(""),
+                        TextFont {
+                            font: FontSource::Handle(font.clone()),
+                            font_size: FontSize::Px(BAR_TEXT_SIZE),
+                            ..default()
+                        },
+                        TextColor(TEXT_MAIN),
+                    ));
+                });
+            toolbar
+                .spawn((
+                    GoButton,
+                    Button,
+                    Node {
+                        width: Val::Px(48.0),
+                        height: Val::Px(24.0),
+                        flex_shrink: 0.0,
+                        border_radius: BorderRadius::all(Val::Px(5.0)),
+                        align_items: AlignItems::Center,
+                        justify_content: JustifyContent::Center,
+                        ..default()
+                    },
+                    BackgroundColor(NAV_BG),
+                ))
+                .with_children(|btn| {
+                    btn.spawn((
+                        Text::new("转到"),
+                        TextFont {
+                            font: FontSource::Handle(font.clone()),
+                            font_size: FontSize::Px(BAR_TEXT_SIZE),
+                            ..default()
+                        },
+                        TextColor(TEXT_MAIN),
+                    ));
+                });
+        });
+
+        win.spawn((
+            BrowserPage,
+            ImageNode {
+                image: image.clone(),
+                ..default()
+            },
+            Node {
+                width: Val::Percent(100.0),
+                flex_grow: 1.0,
+                ..default()
+            },
+            BackgroundColor(PAGE_BG),
+        ));
+    });
+}
+
+/// dock 点击调用的启动入口：发请求，由 BrowserPlugin 消费并真正建窗。
+pub fn request_browser(launch: &mut BrowserLaunch) {
+    launch.0 = true;
+}
+
+fn node_hit(node: &ComputedNode, tf: &UiGlobalTransform, cursor: Vec2) -> bool {
+    let Some(inv) = tf.try_inverse() else {
+        return false;
+    };
+    let local = inv.transform_point2(cursor);
+    let half = node.size() * 0.5;
+    local.x.abs() <= half.x && local.y.abs() <= half.y
+}
+
+/// 页面节点局部（居中原点，逻辑 px）→ 页面左上原点物理 px。
+fn page_device_point(
+    node: &ComputedNode,
+    tf: &UiGlobalTransform,
+    cursor: &CursorPosition,
+) -> Option<Vec2> {
+    if !cursor.active {
+        return None;
+    }
+    let inv = tf.try_inverse()?;
+    let local = inv.transform_point2(cursor.physical);
+    let half = node.size() * 0.5;
+    if local.x.abs() > half.x || local.y.abs() > half.y {
+        return None;
+    }
+    Some((local + half) * cursor.scale.max(1.0))
+}
+
+fn page_device_size(node: &ComputedNode, cursor: &CursorPosition) -> (u32, u32) {
+    let scale = cursor.scale.max(1.0);
+    (
+        (node.size().x * scale).round().max(1.0) as u32,
+        (node.size().y * scale).round().max(1.0) as u32,
+    )
+}
+
+fn leave_editing(focus: &mut BrowserFocus, urlbar: &mut UrlBarState) {
+    focus.page = true;
+    urlbar.editing = false;
+    urlbar.select_all = false;
+    urlbar.text.clear();
+    urlbar.composing.clear();
+}
+
+#[allow(clippy::too_many_arguments)]
+fn browser_chrome(
+    focused: Res<FocusedTitle>,
+    mut owner: ResMut<TextInputOwner>,
+    mut focus: ResMut<BrowserFocus>,
+    mut urlbar: ResMut<UrlBarState>,
+    mut pending: ResMut<PendingNav>,
+    current: Res<CurrentUrl>,
+    cursor: Res<CursorPosition>,
+    pages: Query<Entity, With<BrowserPage>>,
+    page_area: Query<(&ComputedNode, &UiGlobalTransform), (With<BrowserPage>, Without<UrlField>)>,
+    mut buttons: MessageReader<MouseButtonInput>,
+    url_field: Query<(&ComputedNode, &UiGlobalTransform), (With<UrlField>, Without<BrowserPage>)>,
+    go_button: Query<(&ComputedNode, &UiGlobalTransform), (With<GoButton>, Without<BrowserPage>)>,
+    nav_nodes: Query<
+        (&BrowserNav, &ComputedNode, &UiGlobalTransform, &Interaction),
+        (Without<UrlField>, Without<GoButton>, Without<BrowserPage>),
+    >,
+    mut nav_bg: Query<(&mut BackgroundColor, &BrowserNav)>,
+) {
+    let active = focused.title == BROWSER_TITLE && !pages.is_empty();
+    if !active {
+        buttons.clear();
+        return;
+    }
+
+    for ev in buttons.read() {
+        if ev.state != ButtonState::Pressed || ev.button != MouseButton::Left {
+            continue;
+        }
+        owner.0 = TextInputFocus::Browser;
+
+        let hit_field = url_field.iter().any(|(n, t)| node_hit(n, t, cursor.physical));
+        let hit_go = go_button.iter().any(|(n, t)| node_hit(n, t, cursor.physical));
+        let mut nav_click: Option<u8> = None;
+        for (nav, n, t, _) in nav_nodes.iter() {
+            if node_hit(n, t, cursor.physical) {
+                nav_click = Some(nav.0);
+                break;
+            }
+        }
+
+        if hit_field {
+            if !focus.page {
+                urlbar.select_all = true;
+            } else {
+                focus.page = false;
+                urlbar.editing = true;
+                urlbar.select_all = true;
+                urlbar.text = current.0.clone();
+                urlbar.composing.clear();
+            }
+            continue;
+        }
+
+        if let Some(kind) = nav_click {
+            leave_editing(&mut focus, &mut urlbar);
+            pending.0 = Some(match kind {
+                0 => NavCommand::Back,
+                1 => NavCommand::Forward,
+                2 => NavCommand::Reload,
+                _ => NavCommand::Home,
+            });
+            continue;
+        }
+
+        if hit_go {
+            let raw = if focus.page {
+                current.0.clone()
+            } else {
+                let raw = urlbar.visible();
+                leave_editing(&mut focus, &mut urlbar);
+                raw
+            };
+            let raw = raw.trim().to_string();
+            if !raw.is_empty() {
+                pending.0 = Some(NavCommand::Load(raw));
+            }
+            continue;
+        }
+
+        if !focus.page {
+            let hit_page = page_area.iter().any(|(n, t)| node_hit(n, t, cursor.physical));
+            if hit_page {
+                leave_editing(&mut focus, &mut urlbar);
+            }
+        }
+    }
+
+    for (mut bg, nav) in nav_bg.iter_mut() {
+        let state = nav_nodes
+            .iter()
+            .find(|(n, _, _, _)| n.0 == nav.0)
+            .map(|(_, _, _, i)| *i)
+            .unwrap_or(Interaction::None);
+        let target = match state {
+            Interaction::Pressed => NAV_BG_DOWN,
+            Interaction::Hovered => NAV_BG_HOT,
+            Interaction::None => NAV_BG,
+        };
+        if bg.0 != target {
+            bg.0 = target;
+        }
+    }
+}
+
+fn shortcut_char(key: &BevyKey) -> Option<char> {
+    let BevyKey::Character(text) = key else {
+        return None;
+    };
+    let mut chars = text.chars();
+    let c = chars.next()?;
+    chars.next().is_none().then(|| c.to_ascii_lowercase())
+}
+
+fn paste_into_bar(urlbar: &mut UrlBarState, text: &str) {
+    if urlbar.select_all {
+        urlbar.replace_all(text.to_string());
+    } else {
+        urlbar.text.push_str(text);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn browser_bar_input(
+    focused: Res<FocusedTitle>,
+    owner: Res<TextInputOwner>,
+    mut focus: ResMut<BrowserFocus>,
+    mut urlbar: ResMut<UrlBarState>,
+    mut pending: ResMut<PendingNav>,
+    keys: Res<ButtonInput<KeyCode>>,
+    pages: Query<(), With<BrowserPage>>,
+    mut keyboard: MessageReader<KeyboardInput>,
+    mut ime: MessageReader<Ime>,
+    mut prev_editing: Local<bool>,
+) {
+    let editing = focused.title == BROWSER_TITLE
+        && owner.is(TextInputFocus::Browser)
+        && !focus.page
+        && urlbar.editing
+        && !pages.is_empty();
+    if !editing {
+        keyboard.clear();
+        ime.clear();
+        *prev_editing = false;
+        return;
+    }
+
+    if !*prev_editing {
+        for _ in keyboard.read() {}
+        for _ in ime.read() {}
+    }
+    *prev_editing = true;
+
+    let ctrl = keys.any_pressed([
+        KeyCode::ControlLeft,
+        KeyCode::ControlRight,
+        KeyCode::SuperLeft,
+        KeyCode::SuperRight,
+    ]);
+
+    for ev in ime.read() {
+        match ev {
+            Ime::Preedit { value, .. } if !value.is_empty() && urlbar.select_all => {
+                urlbar.clear_selection();
+                urlbar.composing = value.clone();
+            }
+            Ime::Preedit { value, .. } => urlbar.composing = value.clone(),
+            Ime::Commit { value, .. } => {
+                if urlbar.select_all {
+                    urlbar.replace_all(value.clone());
+                } else {
+                    urlbar.composing.clear();
+                    urlbar.text.push_str(value);
+                }
+            }
+            Ime::Enabled { .. } => {}
+            Ime::Disabled { .. } => urlbar.composing.clear(),
+        }
+    }
+
+    let composing = !urlbar.composing.is_empty();
+    for ev in keyboard.read() {
+        if ev.state != ButtonState::Pressed {
+            continue;
+        }
+
+        if ctrl && !ev.repeat {
+            match shortcut_char(&ev.logical_key) {
+                Some('a') => urlbar.select_all = true,
+                Some('c') if urlbar.select_all => {
+                    copy_text(&urlbar.visible());
+                }
+                Some('x') if urlbar.select_all => {
+                    copy_text(&urlbar.visible());
+                    urlbar.clear_selection();
+                }
+                Some('v') => {
+                    if let Some(text) = paste_text() {
+                        paste_into_bar(&mut urlbar, &text);
+                    }
+                }
+                _ => {}
+            }
+            continue;
+        }
+
+        if composing {
+            match &ev.logical_key {
+                BevyKey::Enter | BevyKey::Escape => {}
+                _ => continue,
+            }
+        }
+
+        match &ev.logical_key {
+            BevyKey::Character(c) => {
+                if urlbar.select_all {
+                    urlbar.replace_all(c.to_string());
+                } else {
+                    urlbar.text.push_str(c);
+                }
+            }
+            BevyKey::Backspace if !ev.repeat => {
+                if urlbar.select_all {
+                    urlbar.clear_selection();
+                } else {
+                    urlbar.text.pop();
+                }
+            }
+            BevyKey::Enter if !ev.repeat => {
+                let raw = urlbar.visible();
+                leave_editing(&mut focus, &mut urlbar);
+                let raw = raw.trim();
+                if !raw.is_empty() {
+                    pending.0 = Some(NavCommand::Load(raw.to_string()));
+                }
+            }
+            BevyKey::Escape if !ev.repeat => {
+                urlbar.composing.clear();
+                urlbar.editing = false;
+                urlbar.select_all = false;
+                urlbar.text.clear();
+                focus.page = true;
+            }
+            _ => {}
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn browser_page_input(
+    focused: Res<FocusedTitle>,
+    owner: Res<TextInputOwner>,
+    focus: Res<BrowserFocus>,
+    mut host: NonSendMut<BrowserHost>,
+    keys: Res<ButtonInput<KeyCode>>,
+    cursor: Res<CursorPosition>,
+    page: Query<(&ComputedNode, &UiGlobalTransform), With<BrowserPage>>,
+    primary_window: Query<Entity, With<bevy::window::PrimaryWindow>>,
+    mut keyboard: MessageReader<KeyboardInput>,
+    mut ime: MessageReader<Ime>,
+    mut buttons: MessageReader<MouseButtonInput>,
+    mut wheels: MessageReader<MouseWheel>,
+    mut last_content: Local<Option<Vec2>>,
+    mut prev_page: Local<bool>,
+) {
+    let engine_active = focused.title == BROWSER_TITLE
+        && owner.is(TextInputFocus::Browser)
+        && focus.page;
+    if !engine_active {
+        *prev_page = false;
+        *last_content = None;
+        keyboard.clear();
+        ime.clear();
+        buttons.clear();
+        wheels.clear();
+        return;
+    }
+    if !*prev_page {
+        for _ in keyboard.read() {}
+        for _ in ime.read() {}
+        for _ in buttons.read() {}
+        for _ in wheels.read() {}
+    }
+    *prev_page = true;
+
+    let Some(engine) = host.0.as_mut() else {
+        return;
+    };
+    let Ok(primary) = primary_window.single() else {
+        return;
+    };
+    let Some((node, tf)) = page.iter().next() else {
+        return;
+    };
+    let content = page_device_point(node, tf, &cursor);
+    let webview = &mut engine.webview;
+
+    for ev in keyboard.read() {
+        if ev.window != primary {
+            continue;
+        }
+        let kbd = browser_keyutils::keyboard_event_from_bevy(ev, &keys);
+        webview.notify_input_event(InputEvent::Keyboard(kbd));
+    }
+
+    for ev in ime.read() {
+        let (window, event) = match ev {
+            Ime::Enabled { window } => (
+                *window,
+                Some(ImeEvent::Composition(CompositionEvent {
+                    state: CompositionState::Start,
+                    data: String::new(),
+                })),
+            ),
+            Ime::Preedit { window, value, .. } => (
+                *window,
+                Some(ImeEvent::Composition(CompositionEvent {
+                    state: CompositionState::Update,
+                    data: value.clone(),
+                })),
+            ),
+            Ime::Commit { window, value } => (
+                *window,
+                Some(ImeEvent::Composition(CompositionEvent {
+                    state: CompositionState::End,
+                    data: value.clone(),
+                })),
+            ),
+            Ime::Disabled { window } => {
+                let user_dismissed = engine.delegate.ime.borrow_mut().control_id.take().is_some();
+                (*window, user_dismissed.then_some(ImeEvent::Dismissed))
+            }
+        };
+        let Some(event) = event else {
+            continue;
+        };
+        if window != primary {
+            continue;
+        }
+        webview.notify_input_event(InputEvent::Ime(event));
+    }
+
+    match (content, *last_content) {
+        (Some(p), prev) if Some(p) != prev => {
+            webview.notify_input_event(InputEvent::MouseMove(MouseMoveEvent::new(
+                servo::WebViewPoint::Device(DevicePoint::new(p.x, p.y)),
+            )));
+        }
+        (None, Some(_)) => {
+            webview.notify_input_event(InputEvent::MouseLeftViewport(
+                MouseLeftViewportEvent::default(),
+            ));
+        }
+        _ => {}
+    }
+    *last_content = content;
+
+    let Some(pos) = content else {
+        return;
+    };
+    let point = DevicePoint::new(pos.x, pos.y);
+
+    for ev in buttons.read() {
+        let servo_button = match ev.button {
+            MouseButton::Left => ServoMouseButton::Left,
+            MouseButton::Right => ServoMouseButton::Right,
+            MouseButton::Middle => ServoMouseButton::Middle,
+            _ => continue,
+        };
+        let action = match ev.state {
+            ButtonState::Pressed => MouseButtonAction::Down,
+            ButtonState::Released => MouseButtonAction::Up,
+        };
+        webview.notify_input_event(InputEvent::MouseButton(MouseButtonEvent::new(
+            action,
+            servo_button,
+            servo::WebViewPoint::Device(point),
+        )));
+    }
+
+    for ev in wheels.read() {
+        let (dx, dy, mode) = match ev.unit {
+            MouseScrollUnit::Line => (
+                f64::from(ev.x) * 38.0,
+                f64::from(ev.y) * 38.0,
+                WheelMode::DeltaLine,
+            ),
+            MouseScrollUnit::Pixel => (f64::from(ev.x), f64::from(ev.y), WheelMode::DeltaPixel),
+        };
+        webview.notify_input_event(InputEvent::Wheel(WheelEvent::new(
+            WheelDelta {
+                x: dx,
+                y: dy,
+                z: 0.0,
+                mode,
+            },
+            servo::WebViewPoint::Device(point),
+        )));
+    }
+}
+
+fn browser_drive(
+    mut host: NonSendMut<BrowserHost>,
+    mut frame: ResMut<BrowserFrame>,
+    mut pending: ResMut<PendingNav>,
+    home: Res<HomeUrl>,
+    cursor: Res<CursorPosition>,
+    page: Query<(Entity, &ChildOf, &ComputedNode), With<BrowserPage>>,
+    windows: Query<(&AppWindow, &AppVisible)>,
+) {
+    let Ok((_, child_of, node)) = page.single() else {
+        return;
+    };
+    let Ok((_, app_visible)) = windows.get(child_of.get()) else {
+        return;
+    };
+    if !app_visible.0 {
+        return;
+    }
+
+    if host.0.is_none() {
+        info!("[browser] 首次启动 Servo 引擎…");
+        *host = BrowserHost(Some(build_engine(&home.0)));
+        info!("[browser] Servo 引擎就绪");
+    }
+    let Some(engine) = host.0.as_mut() else {
+        return;
+    };
+
+    let (w, h) = page_device_size(node, &cursor);
+    let new_size = PhysicalSize::new(w.max(1), h.max(1));
+    if new_size != engine.size {
+        engine.webview.resize(new_size);
+        engine.size = new_size;
+    }
+
+    if let Some(command) = pending.0.take() {
+        match command {
+            NavCommand::Load(raw) => {
+                if let Ok(url) = Url::parse(&raw).or_else(|_| Url::parse(&format!("https://{raw}"))) {
+                    info!("[browser] navigate → {url}");
+                    engine.webview.load(url);
+                }
+            }
+            NavCommand::Back => {
+                let _ = engine.webview.go_back(1);
+            }
+            NavCommand::Forward => {
+                let _ = engine.webview.go_forward(1);
+            }
+            NavCommand::Reload => engine.webview.reload(),
+            NavCommand::Home => {
+                if let Ok(url) = Url::parse(&home.0) {
+                    engine.webview.load(url);
+                }
+            }
+        }
+    }
+
+    engine.servo.spin_event_loop();
+    engine.webview.paint();
+
+    if let Some(image) = engine.interop.rendering_context_handle().read_full_frame() {
+        let (w, h) = image.dimensions();
+        frame.0 = Some(FrameDesc {
+            pixels: image.into_raw(),
+            width: w,
+            height: h,
+        });
+    }
+
+    if let Some(new_view) = engine.delegate.take_pending() {
+        new_view.resize(engine.size);
+        engine.webview = new_view;
+    }
+}
+
+/// 帧尺寸与占位纹理不一致时更新 asset descriptor：触发 AssetEvent::Modified，
+/// 让 render world 以新尺寸重建 GpuImage（否则注入端永远因尺寸不匹配而跳过）。
+fn browser_resize_texture(
+    frame: Res<BrowserFrame>,
+    image: Res<BrowserImageHandle>,
+    mut images: ResMut<Assets<Image>>,
+) {
+    let Some(desc) = frame.0.as_ref() else {
+        return;
+    };
+    if let Some(mut img) = images.get_mut(&image.0) {
+        if img.texture_descriptor.size.width != desc.width
+            || img.texture_descriptor.size.height != desc.height
+        {
+            img.texture_descriptor.size = Extent3d {
+                width: desc.width,
+                height: desc.height,
+                depth_or_array_layers: 1,
+            };
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn browser_ui_sync(
+    host: NonSend<BrowserHost>,
+    focused: Res<FocusedTitle>,
+    owner: Res<TextInputOwner>,
+    focus: Res<BrowserFocus>,
+    urlbar: Res<UrlBarState>,
+    cursor: Res<CursorPosition>,
+    mut current: ResMut<CurrentUrl>,
+    mut anchor: ResMut<BrowserImeAnchor>,
+    mut labels: Query<&mut Text, With<UrlLabel>>,
+    url_field: Query<(&ComputedNode, &UiGlobalTransform), With<UrlField>>,
+    page: Query<(&ComputedNode, &UiGlobalTransform), With<BrowserPage>>,
+) {
+    if let Some(engine) = host.0.as_ref() {
+        if let Some(url) = engine.delegate.url.borrow().as_ref() {
+            if current.0 != *url {
+                current.0 = url.clone();
+            }
+        }
+    }
+
+    let browser_active = focused.title == BROWSER_TITLE && owner.is(TextInputFocus::Browser);
+    let editing = browser_active && !focus.page && urlbar.editing;
+    let text = if editing {
+        urlbar.visible()
+    } else {
+        current.0.clone()
+    };
+    if let Ok(mut label) = labels.single_mut() {
+        if **label != text {
+            **label = text;
+        }
+    }
+
+    let mut next = BrowserImeAnchor {
+        enabled: false,
+        pos: Vec2::ZERO,
+    };
+    if editing {
+        if let Ok((field, tf)) = url_field.single() {
+            let field_size = field.size();
+            let text_w = visible_text_width(&urlbar).min(field_size.x - 8.0);
+            let x = -field_size.x * 0.5 + text_w;
+            next.enabled = true;
+            next.pos = tf.transform_point2(Vec2::new(x, field_size.y * 0.5 + 2.0));
+        }
+    } else if browser_active && focus.page {
+        if let Some(engine) = host.0.as_ref() {
+            let ime = engine.delegate.ime.borrow();
+            if let (Some(_), Some((rx, ry))) = (ime.control_id, ime.rect_min) {
+                if let Ok((node, tf)) = page.single() {
+                    let half = node.size() * 0.5;
+                    let scale = cursor.scale.max(1.0);
+                    let top_left = tf.transform_point2(-half);
+                    next.enabled = true;
+                    next.pos = top_left + Vec2::new(rx / scale, ry / scale);
+                }
+            }
+        }
+    }
+    if anchor.enabled != next.enabled || anchor.pos != next.pos {
+        *anchor = next;
+    }
+}
+
+fn visible_text_width(urlbar: &UrlBarState) -> f32 {
+    const BAR_PAD: f32 = 10.0;
+    const ADVANCE: f32 = BAR_TEXT_SIZE * 0.6;
+    let w: f32 = urlbar
+        .visible()
+        .chars()
+        .map(|c| if c.is_ascii() { ADVANCE } else { ADVANCE * 2.0 })
+        .sum();
+    BAR_PAD + w
+}
+
+fn extract_browser_frame(
+    frame: Extract<Res<BrowserFrame>>,
+    page: Extract<Query<&ImageNode, With<BrowserPage>>>,
+    mut out_frame: ResMut<ExtractedFrame>,
+    mut out_id: ResMut<ExtractedImageId>,
+) {
+    out_frame.0 = frame.0.clone();
+    out_id.0 = page.iter().next().map(|img| img.image.id());
+}
+
+fn inject_browser_frame(
+    frame: Res<ExtractedFrame>,
+    image_id: Res<ExtractedImageId>,
+    render_queue: Res<RenderQueue>,
+    gpu_images: Res<RenderAssets<GpuImage>>,
+) {
+    let (Some(desc), Some(id)) = (frame.0.clone(), image_id.0) else {
+        return;
+    };
+    let Some(gpu_image) = gpu_images.get(id) else {
+        return;
+    };
+    if gpu_image.texture_descriptor.size.width != desc.width
+        || gpu_image.texture_descriptor.size.height != desc.height
+    {
+        return;
+    }
+    render_queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: &gpu_image.texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        &desc.pixels,
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(4 * desc.width),
+            rows_per_image: Some(desc.height),
+        },
+        Extent3d {
+            width: desc.width,
+            height: desc.height,
+            depth_or_array_layers: 1,
+        },
+    );
 }

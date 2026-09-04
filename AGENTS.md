@@ -4,12 +4,30 @@
 
 Bevy 0.19 pseudo-OS desktop environment replicating [os.inori.ai](https://os.inori.ai). Rust workspace. Chinese UI.
 
-## Non-Goals（明确不做）
+## 浏览器（2026-09-04 起为真实功能）
 
-- **真实浏览器窗口**：dock 的「浏览器」只开一个占位提示窗（`apps/browser.rs`，纯静态文本），
-  不要给它加真实网页能力。复刻官方 web 端内嵌浏览器需要 bevy_cef 或 bevy_wry(0.16)——复杂度陡增、
-  需分析 web 端静态资源（Nori_web/NoriOS_files 等抓取残留）、拖慢编译，收益不成比例。**不要实现它**，
-  也不要为它搭 HTML 渲染方案；若未来要做，从 bevy_wry 起步并单独评估。
+dock 的「浏览器」是**真实网页浏览器**：`apps/browser.rs`（BrowserPlugin）把 Servo 引擎嵌入
+桌面窗口。技术路线 = wgpu-graft（`refer/wgpu-graft`）Linux **CPU readback**：
+Servo 经 surfman/GL 离屏渲染 → `read_full_frame()` 读回 RGBA → render world
+`queue.write_texture` 上传到 `ImageNode` 的稳定纹理（RENDER_WORLD + COPY_DST）。
+
+- dock 只调用 `request_browser(&mut BrowserLaunch)` 发请求，真正建窗在
+  `browser_launch_window`（需要 `Assets<Image>` 占位纹理 + desktop root + N3riFonts）。
+- 输入路由：窗口焦点 = `FocusedTitle.title=="浏览器"` + `TextInputOwner::Browser`；
+  页面/地址栏二选一（`BrowserFocus.page`）。键盘/鼠标/滚轮/IME 经
+  `browser_keyutils.rs`（Bevy→keyboard_types）转发；IME 锚点写 `BrowserImeAnchor`
+  由 `input_focus::sync_ime_window` 消费。
+- 引擎懒构建（首次打开时一次性 `build_engine`，会卡一帧）；关窗不销毁引擎，
+  再开延续原会话。窗口可拖/缩放/最大化/最小化；最小化时停止 paint/readback。
+- 依赖：`servo` git release/v0.5（default-features=false，baked-in-resources/
+  bundled_freetype/js_jit）+ `servo-wgpu-interop-adapter`/`grafting`（path 直连
+  `refer/wgpu-graft/`，MPL-2.0）。根 Cargo.toml 的 glslopt patch 是 Servo 编译
+  必要条件，勿删。wgpu/winit 直依赖版本必须与 bevy 0.19 统一（纹理类型共享）。
+- 壁纸模式：无键盘/IME 直通 → 页面只能点链接/滚动，地址栏编辑不可用（属已知限制）。
+- **不要改回** bevy_wry/bevy_cef 方案；也不要移除 CPU readback 改共享纹理（桌面
+  单 GPU 是同一 Vulkan，但 render world 线程隔离使 handle 导入复杂化，收益低）。
+
+## Non-Goals（明确不做）
 
 ## Build & Run
 
@@ -17,6 +35,7 @@ Bevy 0.19 pseudo-OS desktop environment replicating [os.inori.ai](https://os.ino
 cargo run -p n3ri-minimal            # 窗口模式（默认）
 cargo run -p n3ri-minimal -- --wallpaper   # 壁纸模式（layer-shell 桌面壁纸）
 cargo run -p n3ri-minimal -- --satellite   # 全局指针卫星进程（壁纸模式自动拉起，也可手动调试）
+cargo run -p n3ri-minimal --features embed-assets  # 嵌入资源模式（单二进制）
 ```
 
 壁纸模式限制：无键盘/IME 直通层；指针被其他窗口遮挡时卫星 delta 外推视差；
@@ -24,7 +43,9 @@ cargo run -p n3ri-minimal -- --satellite   # 全局指针卫星进程（壁纸�
 滚轮（触摸板/鼠标）经 vendored `bevy_live_wallpaper` 的 Wayland axis 捕获，指针位于壁纸 surface 上时生效。
 设置 → 显示效果 → 壁纸模式 开关可互斥切换两种模式（自我重启）。
 
-No other binary targets exist. The only runnable crate is `examples/minimal`（单二进制三模式：默认窗口 / `--wallpaper` / `--satellite`）.
+No other binary targets exist. The only runnable crate is `examples/minimal`（单二进制三模式：默认窗口 / `--wallpaper` / `--satellite`).
+
+`.cargo/config.toml` sets `RUST_BACKTRACE=full` globally for post-mortem debugging.
 
 ## Workspace Structure
 

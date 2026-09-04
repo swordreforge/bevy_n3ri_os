@@ -32,6 +32,17 @@ const BG_DARK: Color = Color::srgb(0.02, 0.05, 0.1);
 const CYAN: Color = Color::srgba(0.4, 0.95, 1.0, 1.0);
 const TRACK_COLOR: Color = Color::srgba(0.15, 0.2, 0.25, 0.5);
 
+/// debug 构建保留默认 info 级日志；release 只留 error，最大化省 I/O
+/// （Servo/webrender 的 info/warn 噪声占大头）。运行时可用 RUST_LOG 覆盖：
+/// `RUST_LOG=info cargo run --release -p n3ri-minimal`
+fn log_filter() -> String {
+    if cfg!(debug_assertions) {
+        format!("{},icu_provider=off", DEFAULT_FILTER)
+    } else {
+        "error,icu_provider=off".to_string()
+    }
+}
+
 /// 画质档位 → 宠物 RTT 最长边上限（像素）。
 /// 极限性能 1280（38fps）/ 平衡 1920（33fps，默认）/ 省电 960（最低 GPU 负载）
 fn pet_rtt_cap(quality_idx: usize) -> u32 {
@@ -92,9 +103,7 @@ fn run_windowed() {
     app.add_plugins(
         DefaultPlugins
             .set(bevy::log::LogPlugin {
-                // bevy_text 用 icu_segmenter 对 CJK 断词，缺少复杂脚本模型时对每段
-                // 中文都打 WARN（No segmentation model...），此处屏蔽该无意义噪声
-                filter: format!("{},icu_provider=off", DEFAULT_FILTER),
+                filter: log_filter(),
                 ..default()
             })
             .set(WindowPlugin {
@@ -145,7 +154,7 @@ fn run_wallpaper() {
     app.add_plugins(
         DefaultPlugins
             .set(bevy::log::LogPlugin {
-                filter: format!("{},icu_provider=off", DEFAULT_FILTER),
+                filter: log_filter(),
                 ..default()
             })
             .set(WindowPlugin {

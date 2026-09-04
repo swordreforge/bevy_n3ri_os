@@ -315,6 +315,7 @@ fn dock_update(
     fonts: Res<N3riFonts>,
     asset_server: Res<AssetServer>,
     mut commands: Commands,
+    mut browser_launch: ResMut<crate::apps::browser::BrowserLaunch>,
     mut last_running: Local<HashMap<Entity, bool>>,
 ) {
     if mouse.just_pressed(MouseButton::Left) {
@@ -409,9 +410,7 @@ fn dock_update(
                             });
                         }
                         "browser" => {
-                            commands.entity(parent_entity).with_children(|parent| {
-                                crate::apps::browser::spawn_browser(parent, &fonts);
-                            });
+                            crate::apps::browser::request_browser(&mut *browser_launch);
                         }
                         _ => {}
                     }

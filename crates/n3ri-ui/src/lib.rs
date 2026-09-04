@@ -56,6 +56,7 @@ impl Plugin for N3riUiPlugin {
             apps::seek_treasure::SeekTreasurePlugin,
             apps::signal::SignalPlugin,
             apps::cakeduel::CakeduelPlugin,
+            apps::browser::BrowserPlugin,
         ));
     }
 }

@@ -21,6 +21,7 @@ pub enum TextInputFocus {
     Settings(usize),
     Pictionary,
     SeekTreasure,
+    Browser,
 }
 
 #[derive(Resource, Default, Debug)]
@@ -43,6 +44,7 @@ pub fn sync_ime_window(
     state: Res<TerminalState>,
     chat: Res<ChatCapsuleState>,
     focused: Res<FocusedTitle>,
+    browser_anchor: Res<crate::apps::browser::BrowserImeAnchor>,
     mut windows: Query<&mut Window, With<PrimaryWindow>>,
     output: Query<(&ComputedNode, &UiGlobalTransform), With<TerminalOutput>>,
     guess_input: Query<(&ComputedNode, &UiGlobalTransform), With<crate::apps::pictionary::PicGuessInput>>,
@@ -53,6 +55,16 @@ pub fn sync_ime_window(
     };
 
     match owner.0 {
+        TextInputFocus::Browser => {
+            if focused.title == "浏览器" {
+                window.ime_enabled = browser_anchor.enabled;
+                if browser_anchor.enabled {
+                    window.ime_position = browser_anchor.pos;
+                }
+            } else {
+                window.ime_enabled = false;
+            }
+        }
         TextInputFocus::Chat if chat.active => {
             let x = window.resolution.width() - CHAT_RIGHT - CHAT_WIDTH + 16.0;
             let y = window.resolution.height() - CHAT_BOTTOM - CHAT_HEIGHT * 0.5;

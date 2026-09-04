@@ -24,3 +24,12 @@ reqwest = { version = "0.12", default-features = false, features = ["blocking", 
 lto = "fat"
 codegen-units = 1
 strip = "symbols"
+
+# ── Servo 浏览器引擎补丁（移植自 refer/wgpu-graft，仅在引入 servo 后生效）──
+#
+# glslopt 0.1.12（webrender 拉入）自带 C11 threads 兼容头，其
+# `typedef pthread_once_t once_flag;` 与 glibc 2.34+ <stdlib.h> 的 once_flag 冲突；
+# 0.1.14 加了 `#ifndef __once_flag_defined` 保护。servo 未升级前在此覆盖，
+# 否则 Fedora 40+ / Ubuntu 24.04+ 编译 Servo 失败。
+[patch.crates-io]
+glslopt = { git = "https://github.com/jamienicol/glslopt-rs", rev = "68019f02a1437d785408ebc8ce7fd20341fffb8a" }

@@ -17,8 +17,12 @@ Servo 经 surfman/GL 离屏渲染 → `read_full_frame()` 读回 RGBA → render
   页面/地址栏二选一（`BrowserFocus.page`）。键盘/鼠标/滚轮/IME 经
   `browser_keyutils.rs`（Bevy→keyboard_types）转发；IME 锚点写 `BrowserImeAnchor`
   由 `input_focus::sync_ime_window` 消费。
-- 引擎懒构建（首次打开时一次性 `build_engine`，会卡一帧）；关窗不销毁引擎，
-  再开延续原会话。窗口可拖/缩放/最大化/最小化；最小化时停止 paint/readback。
+- 引擎懒构建（首次打开时一次性 `build_engine`，会卡一帧）；引擎核心
+  （Servo 实例 + interop/GL 上下文）关窗不销毁，但**页面会话随窗丢弃**：
+  `browser_session_track` 在窗口 despawn 时 `detach_session()`（drop WebView，
+  释放页面 DOM/JS），下次打开 `browser_drive` 检测无会话 → `build_session` 轻量
+  重建并回起始页——与终端「关窗即重置」语义一致；最小化只暂停 paint/readback，
+  不算关闭。
 - 依赖：`servo` git release/v0.5（default-features=false，baked-in-resources/
   bundled_freetype/js_jit）+ `servo-wgpu-interop-adapter`/`grafting`（path 直连
   `refer/wgpu-graft/`，MPL-2.0）。根 Cargo.toml 的 glslopt patch 是 Servo 编译

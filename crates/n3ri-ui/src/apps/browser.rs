@@ -149,12 +149,40 @@ pub struct BrowserLaunch(pub bool);
 #[derive(Resource, Clone)]
 struct BrowserImageHandle(Handle<Image>);
 
+/// 常驻引擎核心：Servo 实例 + interop/GL 上下文（关窗不销毁）。
+/// `webview/delegate` 是会话（一次打开的页面会话），关窗即 drop 释放页面 DOM/JS。
 struct BrowserEngine {
     servo: Servo,
-    webview: WebView,
     interop: ServoWgpuInteropAdapter,
     size: PhysicalSize<u32>,
-    delegate: Rc<BrowserDelegate>,
+    webview: Option<WebView>,
+    delegate: Option<Rc<BrowserDelegate>>,
+}
+
+impl BrowserEngine {
+    fn has_session(&self) -> bool {
+        self.webview.is_some()
+    }
+    fn detach_session(&mut self) {
+        self.webview = None;
+        self.delegate = None;
+    }
+    /// 用同一 Servo/上下文重建一个全新页面会话（关窗后下次打开的轻量恢复）。
+    fn build_session(&mut self, home_url: &str) {
+        let rendering_context = self.interop.rendering_context();
+        let delegate = Rc::new(BrowserDelegate::new(
+            rendering_context.clone(),
+            home_url.to_string(),
+        ));
+        let webview = WebViewBuilder::new(&self.servo, rendering_context)
+            .url(Url::parse(home_url).expect("invalid home url"))
+            .hidpi_scale_factor(Scale::new(1.0))
+            .delegate(delegate.clone())
+            .build();
+        webview.set_page_zoom(PAGE_ZOOM);
+        self.webview = Some(webview);
+        self.delegate = Some(delegate);
+    }
 }
 
 #[derive(Default)]
@@ -302,25 +330,15 @@ fn build_engine(home_url: &str) -> BrowserEngine {
     // 已注册全局 logger（demo 在 App 创建前调用才不冲突）。Servo 组件的 log 记录
     // 经 log crate 自动落入 Bevy logger。
 
-    let rendering_context = interop.rendering_context();
-    let delegate = Rc::new(BrowserDelegate::new(
-        rendering_context.clone(),
-        home_url.to_string(),
-    ));
-    let webview = WebViewBuilder::new(&servo, rendering_context)
-        .url(Url::parse(home_url).expect("invalid home url"))
-        .hidpi_scale_factor(Scale::new(1.0))
-        .delegate(delegate.clone())
-        .build();
-    webview.set_page_zoom(PAGE_ZOOM);
-
-    BrowserEngine {
+    let mut engine = BrowserEngine {
         servo,
-        webview,
         interop,
         size,
-        delegate,
-    }
+        webview: None,
+        delegate: None,
+    };
+    engine.build_session(home_url);
+    engine
 }
 
 pub struct BrowserPlugin;
@@ -357,6 +375,7 @@ impl Plugin for BrowserPlugin {
                         .after(crate::window::WindowFocusSet),
                     browser_resize_texture.after(browser_drive),
                     browser_ui_sync.after(browser_resize_texture),
+                    browser_session_track.after(browser_ui_sync),
                 ),
             );
 
@@ -879,6 +898,9 @@ fn browser_page_input(
     let Some(engine) = host.0.as_mut() else {
         return;
     };
+    let Some(webview) = engine.webview.as_mut() else {
+        return;
+    };
     // 窗口模式：事件带真实主窗 entity，按 window 过滤；壁纸模式无主窗，
     // 事件 window 一律 PLACEHOLDER，全量接收（与 terminal/chat 消费方一致）。
     let primary = primary_window.single().ok();
@@ -886,7 +908,6 @@ fn browser_page_input(
         return;
     };
     let content = page_device_point(node, tf, &cursor);
-    let webview = &mut engine.webview;
 
     for ev in keyboard.read() {
         if let Some(p) = primary {
@@ -922,7 +943,10 @@ fn browser_page_input(
                 })),
             ),
             Ime::Disabled { window } => {
-                let user_dismissed = engine.delegate.ime.borrow_mut().control_id.take().is_some();
+                let user_dismissed = engine
+                    .delegate
+                    .as_ref()
+                    .is_some_and(|d| d.ime.borrow_mut().control_id.take().is_some());
                 (*window, user_dismissed.then_some(ImeEvent::Dismissed))
             }
         };
@@ -1023,10 +1047,19 @@ fn browser_drive(
         return;
     };
 
+    if !engine.has_session() {
+        // 关窗后重开：轻量重建页面会话（引擎/GL 常驻），直接回起始页
+        info!("[browser] 重建页面会话 → {}", home.0);
+        engine.build_session(&home.0);
+    }
+    let Some(webview) = engine.webview.as_mut() else {
+        return;
+    };
+
     let (w, h) = page_device_size(node);
     let new_size = PhysicalSize::new(w.max(1), h.max(1));
     if new_size != engine.size {
-        engine.webview.resize(new_size);
+        webview.resize(new_size);
         engine.size = new_size;
     }
 
@@ -1036,26 +1069,26 @@ fn browser_drive(
                 if let Ok(url) = Url::parse(&raw).or_else(|_| Url::parse(&format!("https://{raw}")))
                 {
                     info!("[browser] navigate → {url}");
-                    engine.webview.load(url);
+                    webview.load(url);
                 }
             }
             NavCommand::Back => {
-                let _ = engine.webview.go_back(1);
+                let _ = webview.go_back(1);
             }
             NavCommand::Forward => {
-                let _ = engine.webview.go_forward(1);
+                let _ = webview.go_forward(1);
             }
-            NavCommand::Reload => engine.webview.reload(),
+            NavCommand::Reload => webview.reload(),
             NavCommand::Home => {
                 if let Ok(url) = Url::parse(&home.0) {
-                    engine.webview.load(url);
+                    webview.load(url);
                 }
             }
         }
     }
 
     engine.servo.spin_event_loop();
-    engine.webview.paint();
+    webview.paint();
 
     if let Some(image) = engine.interop.rendering_context_handle().read_full_frame() {
         let (w, h) = image.dimensions();
@@ -1066,9 +1099,13 @@ fn browser_drive(
         });
     }
 
-    if let Some(new_view) = engine.delegate.take_pending() {
+    if let Some(new_view) = engine
+        .delegate
+        .as_ref()
+        .and_then(|d| d.take_pending())
+    {
         new_view.resize(engine.size);
-        engine.webview = new_view;
+        engine.webview = Some(new_view);
     }
 }
 
@@ -1095,6 +1132,31 @@ fn browser_resize_texture(
     }
 }
 
+/// 窗口真关闭（实体 despawn，区别于最小化）→ 丢弃页面会话（释放 DOM/JS），
+/// 引擎核心（Servo/GL 上下文）保留供下次打开轻量重建；与终端「关窗即重置」一致。
+fn browser_session_track(
+    mut host: NonSendMut<BrowserHost>,
+    home: Res<HomeUrl>,
+    pages: Query<(), With<BrowserPage>>,
+    mut urlbar: ResMut<UrlBarState>,
+    mut focus: ResMut<BrowserFocus>,
+    mut pending: ResMut<PendingNav>,
+    mut current: ResMut<CurrentUrl>,
+    mut was_open: Local<bool>,
+) {
+    let open = !pages.is_empty();
+    if !open && *was_open {
+        *urlbar = UrlBarState::default();
+        *focus = BrowserFocus::default();
+        pending.0 = None;
+        current.0 = home.0.clone();
+        if let Some(engine) = host.0.as_mut() {
+            engine.detach_session();
+        }
+    }
+    *was_open = open;
+}
+
 #[allow(clippy::too_many_arguments)]
 fn browser_ui_sync(
     host: NonSend<BrowserHost>,
@@ -1109,9 +1171,11 @@ fn browser_ui_sync(
     page: Query<(&ComputedNode, &UiGlobalTransform), With<BrowserPage>>,
 ) {
     if let Some(engine) = host.0.as_ref() {
-        if let Some(url) = engine.delegate.url.borrow().as_ref() {
-            if current.0 != *url {
-                current.0 = url.clone();
+        if let Some(delegate) = engine.delegate.as_ref() {
+            if let Some(url) = delegate.url.borrow().as_ref() {
+                if current.0 != *url {
+                    current.0 = url.clone();
+                }
             }
         }
     }
@@ -1143,13 +1207,15 @@ fn browser_ui_sync(
         }
     } else if browser_active && focus.page {
         if let Some(engine) = host.0.as_ref() {
-            let ime = engine.delegate.ime.borrow();
-            if let (Some(_), Some((rx, ry))) = (ime.control_id, ime.rect_min) {
-                if let Ok((node, tf)) = page.single() {
-                    let half = node.size() * 0.5;
-                    let top_left = tf.transform_point2(-half);
-                    next.enabled = true;
-                    next.pos = top_left + Vec2::new(rx, ry);
+            if let Some(delegate) = engine.delegate.as_ref() {
+                let ime = delegate.ime.borrow();
+                if let (Some(_), Some((rx, ry))) = (ime.control_id, ime.rect_min) {
+                    if let Ok((node, tf)) = page.single() {
+                        let half = node.size() * 0.5;
+                        let top_left = tf.transform_point2(-half);
+                        next.enabled = true;
+                        next.pos = top_left + Vec2::new(rx, ry);
+                    }
                 }
             }
         }

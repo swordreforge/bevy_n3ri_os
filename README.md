@@ -12,7 +12,7 @@
 
 本项目的核心动机是**学习 Bevy Shader 开发**以及**与底层 taffy 布局引擎的较量与妥协**。
 
-Bevy 0.19 的 UI 系统构建在 taffy 之上，原生 Flexbox 布局在桌面级窗口管理场景下会遇到各种限制——窗口拖拽、吸附、缩放等交互需要在 taffy 的约束模型内寻找解法，同时 WGSL Shader 与 `UiMaterial` 的集成方式也与传统渲染管线有不少差异。这些正是本项目想要探索和记录的。
+Bevy 0.19 的 UI 系统构建在 taffy 之上，rust的版本的浏览器引擎的使用(不含gstreamer视频播放，会带来较大的依赖问题,较长的构建时间)，原生 Flexbox 布局在桌面级窗口管理场景下会遇到各种限制——窗口拖拽、吸附、缩放等交互需要在 taffy 的约束模型内寻找解法，同时 WGSL Shader 与 `UiMaterial` 的集成方式也与传统渲染管线有不少差异。这些正是本项目想要探索和记录的。
 
 ## 功能概览
 
@@ -43,6 +43,10 @@ Bevy 0.19 的 UI 系统构建在 taffy 之上，原生 Flexbox 布局在桌面�
 - 句子逐字揭示动画
 - 情感识别与 Live2D 表情联动
 
+### 双模式集成
+传统窗口模式:winit0.29创建传统bevy窗口
+动态壁纸模式:thanks to ``bevy_live_wallpaper``,借用xwayland,x11协议识别鼠标点击，请注意需要安装xwayland-satellite包才可触发键盘事件，点击事件，触控集成,否则体验残缺
+
 ### 内置应用
 
 | 应用 | 说明 |
@@ -51,14 +55,15 @@ Bevy 0.19 的 UI 系统构建在 taffy 之上，原生 Flexbox 布局在桌面�
 | 设置 | 主题、音量、亮度等系统设置 |
 | 文件管理器 | 文件浏览 |
 | 图片查看器 | 图片预览 |
-| 国际象棋 | 完整棋盘与规则实现 |
+| 国际象棋 | 完整棋盘与规则实现,ELO算法待接入 |
 | 你画我猜 | 绘画竞猜游戏 |
 | 蛋糕对决 | 休闲对战 |
 | 森林寻宝 | 探索寻宝 |
 | 通讯 | 信号/消息应用 |
 | 邮件 | 邮件客户端 |
-| 算力 | 计算/性能展示 |
-| 致谢 | 开源致谢页面 |
+| 算力 | 计算/性能游戏 |
+| 浏览器 | 真-servo-with-bevy |
+| 致谢 | 致谢页面 |
 | 日志查看器 | 系统日志浏览 |
 | 文本阅读器 | 纯文本阅读 |
 
@@ -111,12 +116,13 @@ cargo run -p n3ri-minimal --features embed-assets
 | 库 | 作者/组织 | 用途 |
 | --- | --- | --- |
 | [Bevy](https://github.com/bevyengine/bevy) | bevyengine | 游戏引擎 / UI 框架 |
-| [bevy\\_tweening](https://github.com/djeedai/bevy_tweening) | djeedai | 动画插值 |
-| [bevy\\_woff](https://crates.io/crates/bevy_woff) | bevy 社区 | WOFF/WOFF2 字体加载 |
+| [wgpu-graft](https://github.com/merely-made/wgpu-graft) | servo浏览器引擎嵌入demo |
+| [bevy\_tweening](https://github.com/djeedai/bevy_tweening) | djeedai | 动画插值 |
+| [bevy\_woff](https://crates.io/crates/bevy_woff) | bevy 社区 | WOFF/WOFF2 字体加载 |
 | [portable-pty](https://github.com/wrz/portable-pty) | wrz | 跨平台 PTY |
 | [chrono](https://github.com/chronotope/chrono) | chronotope | 时间日期处理 |
 | [reqwest](https://github.com/seanmonstar/reqwest) | seanmonstar | HTTP 客户端（LLM 通信） |
-| [icu\\_provider](https://github.com/unicode-org/icu4x) | Unicode / ICU4X | 文本分段（中文支持） |
+| [icu\_provider](https://github.com/unicode-org/icu4x) | Unicode / ICU4X | 文本分段（中文支持） |
 | [serde](https://github.com/serde-rs/serde) | dtolnay | 序列化框架 |
 | [live2d-rs](https://github.com/swordreforge/live2d-rs) | swordreforge（本项目作者） | Live2D Cubism Rust 绑定 |
 

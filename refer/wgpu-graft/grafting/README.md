@@ -1,0 +1,80 @@
+# grafting
+
+Import native GPU textures (GL framebuffers, Vulkan images, Metal IOSurfaces) into host-owned `wgpu` textures. This is the core library of the [servo-wgpu-interop](../) workspace.
+
+This crate is **framework-agnostic** — it has no Servo dependency and can be used by any application that needs to import externally-produced GPU content into wgpu.
+
+## What it does
+
+A "producer" (Servo, a GL renderer, a video decoder, etc.) renders into a native GPU resource. This crate imports that resource into a `wgpu::Texture` owned by the host application, enabling zero-copy compositing across API boundaries.
+
+## Platform support
+
+| Platform | Import path | Status |
+| --- | --- | --- |
+| Linux / Android | GL FBO → Vulkan external memory → wgpu | Implemented |
+| macOS / iOS | IOSurface → Metal texture → wgpu | Implemented |
+| Windows (Vulkan) | GL FBO → Vulkan image (NT handle) → wgpu | Implemented |
+| Windows (DX12) | GL FBO → DX12 shared texture → wgpu | Hardware-verified through the Servo demos |
+
+## Key types
+
+- `HostWgpuContext` — wraps the host's `wgpu::Device` and `wgpu::Queue`
+- `NativeFrame` — platform-specific frame produced by the offscreen renderer
+- `ImportedTexture` — the result of importing a `NativeFrame` into wgpu
+- `ImportOptions` — controls import behavior (format, usage flags)
+- `CapabilityMatrix` — runtime query of what the current platform/driver supports
+- `InteropBackend` — detected backend (Vulkan, Metal, DX12)
+- `FrameProducer` / `TextureImporter` — traits for the produce/import pipeline
+- `WgpuTextureImporter` — default `TextureImporter` implementation
+- `InteropSynchronizer` — trait for cross-API synchronization policies
+
+## Native resource ownership
+
+`NativeFrame` is move-only when it carries a native resource. Safe imports
+consume the frame, so Graft closes a Vulkan descriptor on failed import and
+hands it to the driver only after successful import. Windows producer caches
+reuse a cloneable `Dx12SharedResource` token, then create a fresh move-only
+`Dx12SharedTexture` with its own metadata for each handoff. Metal's safe frame
+takes a retained `MTLTexture`.
+
+Raw native descriptors and borrowed Metal/DX12 handles are available only
+through explicitly `unsafe` constructors or import functions. Their safety
+documentation names the owner and required lifetime; use them only when an
+integration cannot transfer custody to Graft.
+
+## Modules
+
+- `raw_gl` — surfman-independent GL import functions. Use `RawGlFrameProducer` for any GL application without bringing surfman as a dependency (set `default-features = false`).
+- `surfman_gl` — surfman-backed frame producer (enabled by default via the `surfman` feature).
+- `vulkan_dmabuf` — owned DMABUF import, including explicit DRM modifiers,
+  same-buffer multi-plane layouts, and foreign-queue acquisition (Linux). Use
+  `create_dmabuf_host_context` when constructing the app's unified wgpu device;
+  a default device does not enable `VK_EXT_queue_family_foreign`.
+
+## Usage
+
+For Servo embedding, pair this crate with [`servo-wgpu-interop-adapter`](../servo-wgpu-interop-adapter/) which handles Servo-specific setup. For standalone GL import, see [`demo-raw-gl`](../demo-raw-gl/) which uses the `raw_gl` module directly.
+
+Pick exactly one `wgpu-*` feature; it must match the wgpu your host already
+uses, or the imported texture will not share a device.
+
+```toml
+[dependencies]
+# Default: wgpu 29, plus the surfman GL producer path.
+grafting = "0.6.0"
+
+# Same, against wgpu 28.
+grafting = { version = "0.6.0", default-features = false, features = ["wgpu-28", "surfman"] }
+
+# Shared-texture import only (DX12 / Metal / Vulkan DMABUF). No GL, no
+# surfman, no glow. This is what wgpu-weld takes.
+grafting = { version = "0.6.0", default-features = false, features = ["wgpu-29"] }
+
+# Same shared-texture surface against wgpu 30.
+grafting = { version = "0.6.0", default-features = false, features = ["wgpu-30"] }
+```
+
+## License
+
+[MPL-2.0](../LICENSE)

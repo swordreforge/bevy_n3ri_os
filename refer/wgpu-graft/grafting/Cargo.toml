@@ -1,0 +1,93 @@
+[package]
+name = "grafting"
+version = "0.6.0"
+edition = "2024"
+license = "MPL-2.0"
+repository = "https://github.com/merely-made/wgpu-graft"
+description = "Native texture interop helpers for importing offscreen producer frames into host-owned wgpu textures"
+
+[features]
+default = ["wgpu-29", "surfman"]
+# Pick exactly one wgpu version to build against; it must match the host
+# application's wgpu so that imported textures share a device. The newest
+# enabled version wins when several are on (e.g. under `--all-features`);
+# see lib.rs. wgpu-29 stays the default while the GUI ecosystem straddles
+# 29/30 (bevy 0.19 and slint 1.17 are on 29; eframe 0.36 is on 30).
+wgpu-30 = ["dep:wgpu_30", "dep:wgpu_hal_30"]
+wgpu-29 = ["dep:wgpu_29", "dep:wgpu_hal_29"]
+wgpu-28 = [
+    "dep:wgpu_28",
+    "dep:wgpu_hal_28",
+    "dep:metal",
+    "dep:foreign-types-shared",
+]
+# GL framebuffer producer path (raw_gl + glow + the gl_bindings codegen). The
+# shared-texture import paths (DX12 / Metal / Vulkan DMABUF) do not need it, so a
+# non-GL consumer (wgpu-weld, wgpu-scry's shared-texture path) can depend on
+# grafting with `default-features = false` + a wgpu-* feature and skip glow.
+gl = ["dep:glow"]
+# surfman's GL producer builds on raw_gl, so it implies `gl`.
+surfman = ["gl", "dep:euclid", "dep:gleam", "dep:image", "dep:surfman"]
+
+[dependencies]
+thiserror = "2.0.17"
+# wgpu + wgpu-hal are carried at two majors behind cargo features so a consumer
+# can build grafting against whichever wgpu their host already uses, instead of
+# patching the host onto ours. Renamed via `package` so both can coexist as
+# optional deps; lib.rs aliases the selected pair back to `wgpu` / `wgpu_hal`
+# crate-wide via `extern crate`.
+wgpu_30 = { package = "wgpu", version = "30.0.1", features = ["metal"], optional = true }
+wgpu_hal_30 = { package = "wgpu-hal", version = "30.0.1", optional = true }
+wgpu_29 = { package = "wgpu", version = "29.0.1", features = ["metal"], optional = true }
+wgpu_hal_29 = { package = "wgpu-hal", version = "29.0.1", optional = true }
+wgpu_28 = { package = "wgpu", version = "28.0.0", features = ["metal"], optional = true }
+wgpu_hal_28 = { package = "wgpu-hal", version = "28.0.0", optional = true }
+euclid = { version = "0.22.11", optional = true }
+gleam = { version = "0.15.1", optional = true }
+# surfman and glow must match whatever Servo's tracked release line pins, so the
+# GL producer types (Surface/Connection/Context) unify across the
+# servo-wgpu-interop-adapter boundary. Servo's RenderingContext hands these exact
+# types to/from grafting, so a version split there turns every one of those trait
+# methods into a type mismatch. Servo release/v0.4 uses surfman 0.13, glow 0.17.
+glow = { version = "0.17.0", optional = true }
+image = { version = "0.25", optional = true }
+surfman = { version = "0.13.0", features = ["chains", "sm-angle-default"], optional = true }
+dpi = "0.1.2"
+
+[target.'cfg(any(target_os = "linux", target_os = "android", target_os = "windows"))'.dependencies]
+ash = "0.38.0"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Direct3D12",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Security",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Threading",
+] }
+wio = "0.2"
+
+[target.'cfg(target_vendor = "apple")'.dependencies]
+# wgpu-hal 28 exposes metal-rs handles; 29/30 expose objc2-metal handles. The
+# public interop API stays objc2-shaped and converts only at the HAL boundary.
+metal = { version = "0.33.0", optional = true }
+foreign-types-shared = { version = "0.3.1", optional = true }
+objc2 = "0.6.3"
+objc2-foundation = "0.3.2"
+objc2-io-surface = "0.3.2"
+objc2-metal = { version = "0.3.2", features = ["MTLDevice", "MTLAllocation", "MTLResource", "MTLTexture", "MTLEvent", "objc2-io-surface"] }
+
+[build-dependencies]
+gl_generator = "0.14.0"
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+pollster = "0.4"
+
+[dev-dependencies]
+static_assertions = "1.1"

@@ -1,0 +1,24 @@
+---
+name: wgpu-graft project context
+description: Workspace for embedding GL-rendered content (Servo via surfman) into host wgpu textures. Extracted from Slint, renamed from wgpu-gui-bridge 2026-05-05. Two lib crates plus Servo demos. Linux/Apple import paths implemented, Windows ANGLE D3D11 import implemented for DX12 and Vulkan hosts. Architecturally complementary to WebRender wgpu backend work.
+type: project
+---
+
+**wgpu-graft** at `c:\Users\mark_\Code\repos\wgpu-graft` is a Rust workspace for grafting an external GPU producer's texture (today: Servo via surfman/GL) onto host-owned wgpu textures.
+
+**Naming:** Renamed from `wgpu-gui-bridge` on 2026-05-05. "Graft" carries the surgical/horticultural sense — joining an external GPU resource onto a wgpu host. Bare `graft` was already taken on crates.io (orbitinghail's storage engine), so the workspace and primary crate are namespaced as `wgpu-graft`.
+
+**Why:** Servo currently renders via GL (surfman). Host apps increasingly use wgpu. The graft, derived from the Slint repo's Servo example, closes the gap with platform-specific import paths. Also applicable beyond Servo — potentially any GL-rendering app could use the raw path, which has been disambiguated from surfman.
+
+**How to apply:** This project is complementary to ongoing WebRender wgpu backend work. In the short term, GL-interop is useful because Servo's GL path won't change immediately. Long term: when WebRender has a production wgpu backend, the interop either won't be needed or simplifies to same-device texture sharing (Phase 3 in the plan).
+
+**Key architecture insight:** The GL import logic is currently coupled to surfman. Decoupling it (Phase 1) makes the graft usable by any GL producer. The build.rs already generates Windows GL extension bindings (`GL_EXT_memory_object_win32`) for the future Windows path.
+
+**Platform paths:**
+- Linux: GL FBO → Vulkan external memory FD → wgpu texture
+- Apple: IOSurface → Metal texture → BGRA→RGBA normalization → wgpu texture
+- Windows: ANGLE D3D11 → DX12 shared texture by default, with ANGLE D3D11 → Vulkan and non-ANGLE `GL_EXT_memory_object_win32` paths available where supported
+
+**wgpu versions:** feature-selected 28, 29, or 30; 29 is the default and the
+30 row requires at least 30.0.1. The selected `wgpu` / `wgpu-hal` pair is
+re-exported so host device and imported-texture types stay identical.

@@ -23,7 +23,10 @@ Servo 经 surfman/GL 离屏渲染 → `read_full_frame()` 读回 RGBA → render
   bundled_freetype/js_jit）+ `servo-wgpu-interop-adapter`/`grafting`（path 直连
   `refer/wgpu-graft/`，MPL-2.0）。根 Cargo.toml 的 glslopt patch 是 Servo 编译
   必要条件，勿删。wgpu/winit 直依赖版本必须与 bevy 0.19 统一（纹理类型共享）。
-- 壁纸模式：无键盘/IME 直通 → 页面只能点链接/滚动，地址栏编辑不可用（属已知限制）。
+- 壁纸模式：键盘/IME/滚轮经 `wallpaper_keyboard`/`wallpaper_ime`/`wallpaper_bridge`
+  桥接注入 bevy 消息，浏览器同样可点链接/滚动/输入（需壁纸 surface 持有合成器
+  键盘与 text-input 焦点）。页面输入坐标即 UI 渲染空间物理像素（`cursor.physical`），
+  与 `ComputedNode`/`UiGlobalTransform` 同空间——勿再乘 scale（曾致页面点击/滚动全失效）。
 - **不要改回** bevy_wry/bevy_cef 方案；也不要移除 CPU readback 改共享纹理（桌面
   单 GPU 是同一 Vulkan，但 render world 线程隔离使 handle 导入复杂化，收益低）。
 
@@ -38,7 +41,8 @@ cargo run -p n3ri-minimal -- --satellite   # 全局指针卫星进程（壁纸�
 cargo run -p n3ri-minimal --features embed-assets  # 嵌入资源模式（单二进制）
 ```
 
-壁纸模式限制：无键盘/IME 直通层；指针被其他窗口遮挡时卫星 delta 外推视差；
+壁纸模式限制：键盘/IME 需壁纸 surface 持有合成器键盘与 text-input 焦点（经
+`wallpaper_keyboard`/`wallpaper_ime` 桥接，非 winit 直通）；指针被其他窗口遮挡时卫星 delta 外推视差；
 需 `input` 组权限（`sudo usermod -aG input $USER` 后重新登录）。
 滚轮（触摸板/鼠标）经 vendored `bevy_live_wallpaper` 的 Wayland axis 捕获，指针位于壁纸 surface 上时生效。
 设置 → 显示效果 → 壁纸模式 开关可互斥切换两种模式（自我重启）。

@@ -16,9 +16,9 @@ use bevy::asset::RenderAssetUsages;
 use bevy::ecs::message::MessageReader;
 use bevy::ecs::relationship::Relationship;
 use bevy::image::Image;
-use bevy::input::ButtonState;
 use bevy::input::keyboard::{Key as BevyKey, KeyboardInput};
 use bevy::input::mouse::{MouseButtonInput, MouseScrollUnit, MouseWheel};
+use bevy::input::ButtonState;
 use bevy::prelude::*;
 use bevy::render::render_asset::RenderAssets;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat, TextureUsages};
@@ -32,8 +32,8 @@ use rustls::crypto::aws_lc_rs;
 use servo::{
     CompositionEvent, CompositionState, CreateNewWebViewRequest, DevicePoint, EmbedderControl,
     EmbedderControlId, EventLoopWaker, ImeEvent, InputEvent, MouseButton as ServoMouseButton,
-    MouseButtonAction, MouseButtonEvent, MouseLeftViewportEvent, MouseMoveEvent, Servo, ServoBuilder,
-    WebView, WebViewBuilder, WebViewDelegate, WheelDelta, WheelEvent, WheelMode,
+    MouseButtonAction, MouseButtonEvent, MouseLeftViewportEvent, MouseMoveEvent, Servo,
+    ServoBuilder, WebView, WebViewBuilder, WebViewDelegate, WheelDelta, WheelEvent, WheelMode,
 };
 use servo_wgpu_interop_adapter::ServoWgpuInteropAdapter;
 use std::cell::RefCell;
@@ -47,7 +47,7 @@ use crate::dock::{AppVisible, Dock};
 use crate::font::N3riFonts;
 use crate::input_focus::{TextInputFocus, TextInputOwner};
 use crate::topbar::FocusedTitle;
-use crate::window::{AppWindow, spawn_window};
+use crate::window::{spawn_window, AppWindow};
 
 const BROWSER_TITLE: &str = "浏览器";
 const WIN_W: f32 = 1100.0;
@@ -57,7 +57,7 @@ const DEFAULT_HOME: &str = "https://www.bing.com";
 const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
 const SEED_SIZE: (u32, u32) = (1024, 600);
 /// 默认页面缩放（浏览器式 zoom，Servo 范围 0.1~10.0；等价 Ctrl+'+' × 2.5）
-const PAGE_ZOOM: f32 = 2.5;
+const PAGE_ZOOM: f32 = 2.0;
 
 const TOOLBAR_H: f32 = 36.0;
 const BAR_TEXT_SIZE: f32 = 13.0;
@@ -303,7 +303,10 @@ fn build_engine(home_url: &str) -> BrowserEngine {
     // 经 log crate 自动落入 Bevy logger。
 
     let rendering_context = interop.rendering_context();
-    let delegate = Rc::new(BrowserDelegate::new(rendering_context.clone(), home_url.to_string()));
+    let delegate = Rc::new(BrowserDelegate::new(
+        rendering_context.clone(),
+        home_url.to_string(),
+    ));
     let webview = WebViewBuilder::new(&servo, rendering_context)
         .url(Url::parse(home_url).expect("invalid home url"))
         .hidpi_scale_factor(Scale::new(1.0))
@@ -547,7 +550,9 @@ fn node_hit(node: &ComputedNode, tf: &UiGlobalTransform, cursor: Vec2) -> bool {
     local.x.abs() <= half.x && local.y.abs() <= half.y
 }
 
-/// 页面节点局部（居中原点，逻辑 px）→ 页面左上原点物理 px。
+/// 页面节点局部（居中原点）→ 页面左上原点像素。
+/// 坐标系即 `cursor.physical` 所在空间（UI 渲染空间物理像素，与 ComputedNode/
+/// UiGlobalTransform 一致），Servo hidpi=1 下 device px 与此 1:1，勿再乘 scale。
 fn page_device_point(
     node: &ComputedNode,
     tf: &UiGlobalTransform,
@@ -562,14 +567,13 @@ fn page_device_point(
     if local.x.abs() > half.x || local.y.abs() > half.y {
         return None;
     }
-    Some((local + half) * cursor.scale.max(1.0))
+    Some(local + half)
 }
 
-fn page_device_size(node: &ComputedNode, cursor: &CursorPosition) -> (u32, u32) {
-    let scale = cursor.scale.max(1.0);
+fn page_device_size(node: &ComputedNode) -> (u32, u32) {
     (
-        (node.size().x * scale).round().max(1.0) as u32,
-        (node.size().y * scale).round().max(1.0) as u32,
+        node.size().x.round().max(1.0) as u32,
+        node.size().y.round().max(1.0) as u32,
     )
 }
 
@@ -613,8 +617,12 @@ fn browser_chrome(
         }
         owner.0 = TextInputFocus::Browser;
 
-        let hit_field = url_field.iter().any(|(n, t)| node_hit(n, t, cursor.physical));
-        let hit_go = go_button.iter().any(|(n, t)| node_hit(n, t, cursor.physical));
+        let hit_field = url_field
+            .iter()
+            .any(|(n, t)| node_hit(n, t, cursor.physical));
+        let hit_go = go_button
+            .iter()
+            .any(|(n, t)| node_hit(n, t, cursor.physical));
         let mut nav_click: Option<u8> = None;
         for (nav, n, t, _) in nav_nodes.iter() {
             if node_hit(n, t, cursor.physical) {
@@ -663,7 +671,9 @@ fn browser_chrome(
         }
 
         if !focus.page {
-            let hit_page = page_area.iter().any(|(n, t)| node_hit(n, t, cursor.physical));
+            let hit_page = page_area
+                .iter()
+                .any(|(n, t)| node_hit(n, t, cursor.physical));
             if hit_page {
                 leave_editing(&mut focus, &mut urlbar);
             }
@@ -847,9 +857,8 @@ fn browser_page_input(
     mut last_content: Local<Option<Vec2>>,
     mut prev_page: Local<bool>,
 ) {
-    let engine_active = focused.title == BROWSER_TITLE
-        && owner.is(TextInputFocus::Browser)
-        && focus.page;
+    let engine_active =
+        focused.title == BROWSER_TITLE && owner.is(TextInputFocus::Browser) && focus.page;
     if !engine_active {
         *prev_page = false;
         *last_content = None;
@@ -859,20 +868,20 @@ fn browser_page_input(
         wheels.clear();
         return;
     }
+    // 页面从失活转激活的当帧：只丢弃积压的键盘/IME（避免把旧按键灌进刚聚焦的
+    // 页面），鼠标点击/滚轮必须放行——首击用于把焦点给到 Servo 的 DOM 元素。
     if !*prev_page {
         for _ in keyboard.read() {}
         for _ in ime.read() {}
-        for _ in buttons.read() {}
-        for _ in wheels.read() {}
     }
     *prev_page = true;
 
     let Some(engine) = host.0.as_mut() else {
         return;
     };
-    let Ok(primary) = primary_window.single() else {
-        return;
-    };
+    // 窗口模式：事件带真实主窗 entity，按 window 过滤；壁纸模式无主窗，
+    // 事件 window 一律 PLACEHOLDER，全量接收（与 terminal/chat 消费方一致）。
+    let primary = primary_window.single().ok();
     let Some((node, tf)) = page.iter().next() else {
         return;
     };
@@ -880,8 +889,10 @@ fn browser_page_input(
     let webview = &mut engine.webview;
 
     for ev in keyboard.read() {
-        if ev.window != primary {
-            continue;
+        if let Some(p) = primary {
+            if ev.window != p {
+                continue;
+            }
         }
         let kbd = browser_keyutils::keyboard_event_from_bevy(ev, &keys);
         webview.notify_input_event(InputEvent::Keyboard(kbd));
@@ -918,8 +929,10 @@ fn browser_page_input(
         let Some(event) = event else {
             continue;
         };
-        if window != primary {
-            continue;
+        if let Some(p) = primary {
+            if window != p {
+                continue;
+            }
         }
         webview.notify_input_event(InputEvent::Ime(event));
     }
@@ -988,7 +1001,6 @@ fn browser_drive(
     mut frame: ResMut<BrowserFrame>,
     mut pending: ResMut<PendingNav>,
     home: Res<HomeUrl>,
-    cursor: Res<CursorPosition>,
     page: Query<(Entity, &ChildOf, &ComputedNode), With<BrowserPage>>,
     windows: Query<(&AppWindow, &AppVisible)>,
 ) {
@@ -1011,7 +1023,7 @@ fn browser_drive(
         return;
     };
 
-    let (w, h) = page_device_size(node, &cursor);
+    let (w, h) = page_device_size(node);
     let new_size = PhysicalSize::new(w.max(1), h.max(1));
     if new_size != engine.size {
         engine.webview.resize(new_size);
@@ -1021,7 +1033,8 @@ fn browser_drive(
     if let Some(command) = pending.0.take() {
         match command {
             NavCommand::Load(raw) => {
-                if let Ok(url) = Url::parse(&raw).or_else(|_| Url::parse(&format!("https://{raw}"))) {
+                if let Ok(url) = Url::parse(&raw).or_else(|_| Url::parse(&format!("https://{raw}")))
+                {
                     info!("[browser] navigate → {url}");
                     engine.webview.load(url);
                 }
@@ -1089,7 +1102,6 @@ fn browser_ui_sync(
     owner: Res<TextInputOwner>,
     focus: Res<BrowserFocus>,
     urlbar: Res<UrlBarState>,
-    cursor: Res<CursorPosition>,
     mut current: ResMut<CurrentUrl>,
     mut anchor: ResMut<BrowserImeAnchor>,
     mut labels: Query<&mut Text, With<UrlLabel>>,
@@ -1135,10 +1147,9 @@ fn browser_ui_sync(
             if let (Some(_), Some((rx, ry))) = (ime.control_id, ime.rect_min) {
                 if let Ok((node, tf)) = page.single() {
                     let half = node.size() * 0.5;
-                    let scale = cursor.scale.max(1.0);
                     let top_left = tf.transform_point2(-half);
                     next.enabled = true;
-                    next.pos = top_left + Vec2::new(rx / scale, ry / scale);
+                    next.pos = top_left + Vec2::new(rx, ry);
                 }
             }
         }

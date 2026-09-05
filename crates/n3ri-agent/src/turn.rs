@@ -14,12 +14,14 @@ use n3ri_llm::{LlmClient, Message};
 
 use crate::config::AgentConfig;
 use crate::emotion::split_sentences;
+use crate::memory::{build_memory_block, handle_recall_memory, HotMemory, MemoryStore};
 use crate::prompt::build_context_block;
 use crate::scheduler::HookKind;
 use crate::world::{AgentWorldView, ContextSnapshot};
 
 pub const PROACTIVE_WAIT_SECS: f64 = 60.0;
 pub const PROACTIVE_MAX_QUEUE: usize = 4;
+pub const TOOL_LOOP_MAX: usize = 3;
 
 pub const PROACTIVE_INSTRUCTION: &str =
     "这是你主动开口，只说 2~3 句，一句一行，保持 Nori 口吻，末尾照常带且仅带一个情绪标签。";
@@ -126,6 +128,7 @@ pub fn build_proactive_system(
     world_prompt: &str,
     view: &AgentWorldView,
     snap: &ContextSnapshot,
+    memory: Option<&str>,
 ) -> String {
     let ctx = build_context_block(view, snap);
     let hook_line = match kind {
@@ -134,7 +137,12 @@ pub fn build_proactive_system(
         HookKind::Break => format!("【主动契机：{reason}，提醒休息】"),
         HookKind::Startup => format!("【主动契机：{reason}】"),
     };
-    format!("{world_prompt}\n{ctx}\n{hook_line}\n{PROACTIVE_INSTRUCTION}")
+    match memory {
+        Some(m) if !m.is_empty() => {
+            format!("{world_prompt}\n{ctx}\n{m}\n{hook_line}\n{PROACTIVE_INSTRUCTION}")
+        }
+        _ => format!("{world_prompt}\n{ctx}\n{hook_line}\n{PROACTIVE_INSTRUCTION}"),
+    }
 }
 
 fn fallback_for(kind: HookKind) -> Option<&'static str> {
@@ -151,6 +159,64 @@ fn load_world_prompt() -> String {
         .unwrap_or_else(|_| "你是 Nori,一个被困在蓝色数字空间里的白发 AI 女孩。".to_string())
 }
 
+/// recall tool-loop（被动/主动共用）：`send_with_tools` → 执行 `recall_memory`
+/// → 回填 → 终答。max 3 轮；3 轮用完强制去 tools 拿终答。永不抛错。
+pub fn run_recall_loop(
+    client: &LlmClient,
+    history: &[Message],
+    config: &n3ri_llm::LlmConfig,
+    store: &MemoryStore,
+) -> Result<String, String> {
+    use n3ri_llm::{assistant_to_wire, tool_to_wire};
+    let recall = n3ri_llm::ToolDef {
+        name: "recall_memory",
+        description: "检索 Nori 的温记忆（facts/reflections）。想不起用户的事时调用。",
+        parameters: n3ri_llm::recall_memory_schema(),
+    };
+    let tools = [recall];
+    let wire_history: Vec<serde_json::Value> = history
+        .iter()
+        .map(|m| {
+            serde_json::json!({
+                "role": serde_json::to_value(m.role).unwrap_or_default(),
+                "content": m.content,
+            })
+        })
+        .collect();
+    let mut wire = wire_history;
+    let mut final_text: Option<String> = None;
+    for _ in 0..TOOL_LOOP_MAX {
+        let assistant = client.send_with_tools_wire(&wire, config, &tools)?;
+        if assistant.tool_calls.is_empty() {
+            final_text = Some(assistant.content);
+            break;
+        }
+        wire.push(assistant_to_wire(&assistant));
+        for call in &assistant.tool_calls {
+            let env = if call.name == "recall_memory" {
+                handle_recall_memory(store, &call.arguments)
+            } else {
+                n3ri_llm::ToolEnvelope::err(format!("未知工具 {}", call.name))
+            };
+            wire.push(tool_to_wire(call, &env));
+        }
+        if !assistant.content.trim().is_empty() {
+            final_text = Some(assistant.content.clone());
+        }
+    }
+    match final_text {
+        Some(t) if !t.trim().is_empty() => Ok(t),
+        _ => {
+            let assistant = client.send_with_tools_wire(&wire, config, &[])?;
+            if assistant.content.trim().is_empty() {
+                Err("模型返回空 content".to_string())
+            } else {
+                Ok(assistant.content)
+            }
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn proactive_dispatch(
     time: Res<Time>,
@@ -159,6 +225,8 @@ fn proactive_dispatch(
     mut queue: ResMut<ProactiveQueue>,
     view: Res<AgentWorldView>,
     snap: Res<ContextSnapshot>,
+    hot: Res<HotMemory>,
+    store: Res<crate::memory::MemoryStoreRes>,
     passive: Res<PassivePending>,
 ) {
     if turn.pending || !cfg.enabled {
@@ -175,8 +243,15 @@ fn proactive_dispatch(
     };
 
     let world_prompt = load_world_prompt();
-    let system = build_proactive_system(next.kind, &next.reason, &world_prompt, &view, &snap);
-    let req = vec![
+    let mem_block = build_memory_block(&store.store, &hot);
+    let mem_opt = if mem_block.is_empty() {
+        None
+    } else {
+        Some(mem_block.as_str())
+    };
+    let system =
+        build_proactive_system(next.kind, &next.reason, &world_prompt, &view, &snap, mem_opt);
+    let history = vec![
         Message::system(system),
         Message::user("（等待你的主动开口）"),
     ];
@@ -185,7 +260,8 @@ fn proactive_dispatch(
     let config = n3ri_llm::load_config();
     let kind = next.kind;
     thread::spawn(move || {
-        let text = client.send(&req, &config);
+        let store = MemoryStore::load();
+        let text = run_recall_loop(&client, &history, &config, &store);
         let _ = tx.send(TurnOutput { kind, text });
     });
     turn.rx = Some(Mutex::new(rx));
@@ -259,7 +335,14 @@ mod tests {
             ..Default::default()
         };
         let snap = ContextSnapshot::default();
-        let s = build_proactive_system(HookKind::Idle, "用户挂机 32 分钟了", "世界观", &view, &snap);
+        let s = build_proactive_system(
+            HookKind::Idle,
+            "用户挂机 32 分钟了",
+            "世界观",
+            &view,
+            &snap,
+            None,
+        );
         assert!(s.contains("世界观"));
         assert!(s.contains("<context>"));
         assert!(s.contains("用户挂机 32 分钟了"));

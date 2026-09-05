@@ -1,4 +1,4 @@
-//! Agent 配置（M0 占位：默认值 + 路径，load/save 在 M2 接 scheduler.json 时补全）。
+//! Agent 配置（M3：load/save 落 `~/.config/n3ri_os/agent/config.json`，原子写）。
 
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -35,6 +35,32 @@ impl Default for AgentConfig {
                 .into_iter()
                 .map(str::to_string)
                 .collect(),
+        }
+    }
+}
+
+impl AgentConfig {
+    fn path() -> std::path::PathBuf {
+        crate::memory::agent_dir().join("config.json")
+    }
+
+    pub fn load() -> Self {
+        match std::fs::read_to_string(Self::path()) {
+            Ok(json) => serde_json::from_str(&json).unwrap_or_default(),
+            Err(_) => Self::default(),
+        }
+    }
+
+    pub fn save(&self) {
+        let path = Self::path();
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        if let Ok(json) = serde_json::to_string_pretty(self) {
+            let tmp = path.with_extension("json.tmp");
+            if std::fs::write(&tmp, &json).is_ok() {
+                let _ = std::fs::rename(&tmp, &path);
+            }
         }
     }
 }

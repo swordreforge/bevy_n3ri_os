@@ -167,9 +167,17 @@ pub fn build_context_block(view: &AgentWorldView, snap: &ContextSnapshot) -> Str
     out
 }
 
-/// 被动轮 system 追加：世界观 + 情绪指令（调用方传入）+ context 块。
-pub fn append_context(system: &str, view: &AgentWorldView, snap: &ContextSnapshot) -> String {
-    format!("{system}\n{}", build_context_block(view, snap))
+/// 被动轮 system 追加：世界观 + 情绪指令（调用方传入）+ context 块 + memory 段。
+pub fn append_context(
+    system: &str,
+    view: &AgentWorldView,
+    snap: &ContextSnapshot,
+    memory: Option<&str>,
+) -> String {
+    match memory {
+        Some(m) if !m.is_empty() => format!("{system}\n{}\n{m}", build_context_block(view, snap)),
+        _ => format!("{system}\n{}", build_context_block(view, snap)),
+    }
 }
 
 fn outside_label(app_id: &str) -> &str {
@@ -250,6 +258,17 @@ mod tests {
         let b = build_context_block(&v, &snap);
         assert!(b.contains("无聚焦窗口"));
         assert!(b.chars().count() <= CONTEXT_BLOCK_MAX_CHARS + 22);
+    }
+
+    #[test]
+    fn append_context_with_and_without_memory() {
+        let v = view();
+        let snap = ContextSnapshot::default();
+        let a = append_context("sys", &v, &snap, None);
+        assert!(a.contains("<context>"));
+        assert!(!a.contains("<memory>"));
+        let b = append_context("sys", &v, &snap, Some("<memory>\nx\n</memory>"));
+        assert!(b.contains("<memory>"));
     }
 
     #[test]

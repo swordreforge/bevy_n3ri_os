@@ -13,9 +13,9 @@ use serde::{Deserialize, Serialize};
 
 pub mod tools;
 pub use tools::{
-    builtin_tool_defs, niri_spawn_schema, niri_window_schema, niri_windows_schema,
-    notify_schema, open_app_schema, recall_memory_schema, AssistantMessage, ToolCallRequest,
-    ToolDef, ToolEnvelope,
+    assistant_to_wire, builtin_tool_defs, niri_spawn_schema, niri_window_schema,
+    niri_windows_schema, notify_schema, open_app_schema, recall_memory_schema, tool_to_wire,
+    AssistantMessage, ToolCallRequest, ToolDef, ToolEnvelope,
 };
 
 // ============================

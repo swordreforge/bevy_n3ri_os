@@ -26,7 +26,7 @@ const BAD_RED: Color = Color::srgb(0.9, 0.35, 0.35);
 const BUTTON_BORDER_COLOR: Color = Color::srgba(0.55, 0.65, 0.75, 0.5);
 
 const QUALITY_OPTIONS: [&str; 3] = ["极限性能", "平衡", "省电"];
-const TAB_LABELS: [(&str, &str); 7] = [
+const TAB_LABELS: [(&str, &str); 8] = [
     ("sound", "声音"),
     ("music", "音乐"),
     ("display", "显示效果"),
@@ -34,6 +34,7 @@ const TAB_LABELS: [(&str, &str); 7] = [
     ("touch", "触控"),
     ("system", "系统"),
     ("model", "模型"),
+    ("agent", "智能体"),
 ];
 
 #[derive(Clone, Copy, PartialEq)]
@@ -45,9 +46,10 @@ enum SettingsTab {
     Touch,
     System,
     Model,
+    Agent,
 }
 
-const TAB_ORDER: [SettingsTab; 7] = [
+const TAB_ORDER: [SettingsTab; 8] = [
     SettingsTab::Sound,
     SettingsTab::Music,
     SettingsTab::Display,
@@ -55,6 +57,7 @@ const TAB_ORDER: [SettingsTab; 7] = [
     SettingsTab::Touch,
     SettingsTab::System,
     SettingsTab::Model,
+    SettingsTab::Agent,
 ];
 
 #[derive(Clone)]
@@ -115,9 +118,9 @@ impl Default for SettingsState {
 
 #[derive(Resource, Default)]
 struct SettingsEntities {
-    pages: [Option<Entity>; 7],
-    nav_bg: [Option<Entity>; 7],
-    nav_text: [Option<Entity>; 7],
+    pages: [Option<Entity>; 8],
+    nav_bg: [Option<Entity>; 8],
+    nav_text: [Option<Entity>; 8],
     fill: [Option<Entity>; 4],
     knob: [Option<Entity>; 4],
     pct: [Option<Entity>; 4],
@@ -141,6 +144,10 @@ struct SettingsEntities {
     music_track_count: Option<Entity>,
     music_list: Option<Entity>,
     music_builtin_hint: Option<Entity>,
+    agent_status: Option<Entity>,
+    agent_memory_status: Option<Entity>,
+    agent_toggle_bg: [Option<Entity>; 4],
+    agent_toggle_knob: [Option<Entity>; 4],
 }
 
 #[derive(Component)]
@@ -225,6 +232,15 @@ struct MusicList;
 #[derive(Component)]
 struct MusicTrackCount;
 
+#[derive(Component)]
+struct AgentToggle(u8);
+
+#[derive(Component)]
+struct AgentClearBtn;
+
+#[derive(Component)]
+struct AgentClearStatus;
+
 pub struct SettingsPlugin;
 
 impl Plugin for SettingsPlugin {
@@ -244,6 +260,8 @@ impl Plugin for SettingsPlugin {
                     settings_poll,
                     settings_sync_ui,
                     settings_music_click.after(crate::window::WindowFocusSet),
+                    settings_agent_click.after(crate::window::WindowFocusSet),
+                    settings_agent_sync,
                     settings_llm_click.after(crate::window::WindowFocusSet),
                     settings_llm_input.after(settings_llm_click),
                     settings_llm_ime.after(settings_llm_click),
@@ -332,6 +350,7 @@ pub fn spawn_settings_window(parent: &mut ChildSpawnerCommands, fonts: &N3riFont
                         ents.pages[5] = Some(spawn_system_page(content, fonts, &mut ents));
                         ents.pages[6] =
                             Some(spawn_model_page(content, fonts, &mut ents, &mut state));
+                        ents.pages[7] = Some(spawn_agent_page(content, fonts, &mut ents));
                         });
                     });
                 });
@@ -2524,4 +2543,288 @@ fn settings_music_list_rebuild(
         });
     }
     state.last_music_key = Some(new_fp);
+}
+
+const AGENT_TOGGLES: [(u8, &str); 4] = [
+    (0, "智能体总开关"),
+    (1, "记忆（写盘 + 召回）"),
+    (2, "整点报时"),
+    (3, "久坐提醒"),
+];
+
+fn agent_flag(cfg: &n3ri_agent::AgentConfig, idx: u8) -> bool {
+    match idx {
+        0 => cfg.enabled,
+        1 => cfg.memory_enabled,
+        2 => cfg.hourly_chime,
+        _ => cfg.break_reminder,
+    }
+}
+
+fn apply_agent_flag(cfg: &mut n3ri_agent::AgentConfig, idx: u8, on: bool) {
+    match idx {
+        0 => cfg.enabled = on,
+        1 => cfg.memory_enabled = on,
+        2 => cfg.hourly_chime = on,
+        _ => cfg.break_reminder = on,
+    }
+}
+
+fn spawn_agent_page(
+    parent: &mut ChildSpawnerCommands,
+    fonts: &N3riFonts,
+    ents: &mut SettingsEntities,
+) -> Entity {
+    let cfg = n3ri_agent::AgentConfig::load();
+    let page_e = parent
+        .spawn((
+            SettingsPage,
+            Node {
+                width: Val::Percent(100.0),
+                flex_direction: FlexDirection::Column,
+                row_gap: Val::Px(16.0),
+                ..default()
+            },
+        ))
+        .id();
+
+    parent.commands().entity(page_e).with_children(|page| {
+        page_header(page, fonts, "智能体", "Nori 主动搭话与记忆");
+
+        for (idx, label) in AGENT_TOGGLES {
+            page.spawn(Node {
+                width: Val::Px(280.0),
+                height: Val::Px(44.0),
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::SpaceBetween,
+                padding: UiRect::all(Val::Px(12.0)),
+                border_radius: BorderRadius::all(Val::Px(8.0)),
+                border: UiRect::all(Val::Px(1.0)),
+                ..default()
+            })
+            .with_children(|row| {
+                row.spawn((
+                    Text::new(label),
+                    TextFont {
+                        font: FontSource::Handle(fonts.default.clone()),
+                        font_size: FontSize::Px(14.0),
+                        ..default()
+                    },
+                    TextColor(TEXT_MAIN),
+                ));
+                row.spawn(Node {
+                    width: Val::Px(60.0),
+                    height: Val::Px(1.0),
+                    ..default()
+                });
+                let (bg, knob) = spawn_agent_toggle(row, idx, agent_flag(&cfg, idx));
+                ents.agent_toggle_bg[idx as usize] = Some(bg);
+                ents.agent_toggle_knob[idx as usize] = Some(knob);
+            });
+        }
+
+        ents.agent_status = Some(
+            page.spawn((
+                Text::new(" "),
+                TextFont {
+                    font: FontSource::Handle(fonts.default.clone()),
+                    font_size: FontSize::Px(12.0),
+                    ..default()
+                },
+                TextColor(TEXT_DIM),
+            ))
+            .id(),
+        );
+        ents.agent_memory_status = Some(
+            page.spawn((
+                Text::new(" "),
+                TextFont {
+                    font: FontSource::Handle(fonts.default.clone()),
+                    font_size: FontSize::Px(12.0),
+                    ..default()
+                },
+                TextColor(TEXT_DIM),
+            ))
+            .id(),
+        );
+
+        page.spawn((
+            Button,
+            AgentClearBtn,
+            Node {
+                width: Val::Px(120.0),
+                height: Val::Px(36.0),
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                border_radius: BorderRadius::all(Val::Px(8.0)),
+                border: UiRect::all(Val::Px(1.0)),
+                ..default()
+            },
+            BorderColor::all(BUTTON_BORDER_COLOR),
+        ))
+        .with_children(|b| {
+            b.spawn((
+                Text::new("清除记忆"),
+                TextFont {
+                    font: FontSource::Handle(fonts.default.clone()),
+                    font_size: FontSize::Px(13.0),
+                    ..default()
+                },
+                TextColor(TEXT_MAIN),
+            ));
+        });
+
+        page.spawn((
+            AgentClearStatus,
+            Text::new("记忆文件保存在本地（~/.config/n3ri_os/agent/），摘要/抽取会走你自己的模型接口。"),
+            TextFont {
+                font: FontSource::Handle(fonts.default.clone()),
+                font_size: FontSize::Px(12.0),
+                ..default()
+            },
+            TextColor(TEXT_DIM),
+        ));
+    });
+
+    page_e
+}
+
+fn spawn_agent_toggle(parent: &mut ChildSpawnerCommands, idx: u8, on: bool) -> (Entity, Entity) {
+    let bg = parent
+        .spawn((
+            Button,
+            AgentToggle(idx),
+            Node {
+                width: Val::Px(40.0),
+                height: Val::Px(20.0),
+                border_radius: BorderRadius::all(Val::Px(10.0)),
+                ..default()
+            },
+            BackgroundColor(if on { ACCENT } else { TOGGLE_OFF }),
+        ))
+        .id();
+
+    let mut knob_e = Entity::PLACEHOLDER;
+    parent.commands().entity(bg).with_children(|t| {
+        knob_e = t
+            .spawn((
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: Val::Px(if on { 22.0 } else { 2.0 }),
+                    top: Val::Px(2.0),
+                    width: Val::Px(16.0),
+                    height: Val::Px(16.0),
+                    border_radius: BorderRadius::all(Val::Px(8.0)),
+                    ..default()
+                },
+                BackgroundColor(Color::WHITE),
+            ))
+            .id();
+    });
+
+    (bg, knob_e)
+}
+
+fn settings_agent_click(
+    mouse: Res<ButtonInput<MouseButton>>,
+    toggles: Query<(&AgentToggle, &Interaction)>,
+    clear_btn: Query<&Interaction, With<AgentClearBtn>>,
+    mut agent_cfg: ResMut<n3ri_agent::AgentConfig>,
+    mut clear_text: Query<&mut Text, With<AgentClearStatus>>,
+    mut store: Option<ResMut<n3ri_agent::MemoryStoreRes>>,
+    mut hot: Option<ResMut<n3ri_agent::HotMemory>>,
+) {
+    if !mouse.just_pressed(MouseButton::Left) {
+        return;
+    }
+    for (AgentToggle(idx), interaction) in toggles.iter() {
+        if *interaction == Interaction::Pressed {
+            let next = !agent_flag(&agent_cfg, *idx);
+            apply_agent_flag(&mut agent_cfg, *idx, next);
+            agent_cfg.save();
+            if *idx == 1 && !next {
+                if let Some(h) = hot.as_mut() {
+                    h.memo.clear();
+                    h.tail.clear();
+                }
+                if let Some(s) = store.as_mut() {
+                    s.store = n3ri_agent::MemoryStore::default();
+                }
+            }
+        }
+    }
+    for interaction in clear_btn.iter() {
+        if *interaction == Interaction::Pressed {
+            n3ri_agent::clear_memory_files();
+            if let Some(h) = hot.as_mut() {
+                h.memo.clear();
+                h.tail.clear();
+            }
+            if let Some(s) = store.as_mut() {
+                s.store = n3ri_agent::MemoryStore::default();
+            }
+            for mut text in clear_text.iter_mut() {
+                **text = "已清除本地记忆文件。".to_string();
+            }
+        }
+    }
+}
+
+fn settings_agent_sync(
+    agent_cfg: Res<n3ri_agent::AgentConfig>,
+    sched: Option<Res<n3ri_agent::SchedulerState>>,
+    hot: Option<Res<n3ri_agent::HotMemory>>,
+    store: Option<Res<n3ri_agent::MemoryStoreRes>>,
+    ents: Res<SettingsEntities>,
+    mut node_bg_query: Query<(&mut Node, &mut BackgroundColor), Without<SettingsPage>>,
+    mut text_query: Query<&mut Text>,
+    mut color_query: Query<&mut TextColor>,
+) {
+    for idx in 0..4u8 {
+        let on = agent_flag(&agent_cfg, idx);
+        if let Some(bg_e) = ents.agent_toggle_bg[idx as usize] {
+            if let Ok((_, mut bg)) = node_bg_query.get_mut(bg_e) {
+                let target = if on { ACCENT } else { TOGGLE_OFF };
+                if bg.0 != target {
+                    bg.0 = target;
+                }
+            }
+        }
+        if let Some(knob_e) = ents.agent_toggle_knob[idx as usize] {
+            if let Ok((mut node, _)) = node_bg_query.get_mut(knob_e) {
+                set_px_left(&mut node, if on { 22.0 } else { 2.0 });
+            }
+        }
+    }
+    if let Some(e) = ents.agent_status {
+        let target = match sched.as_deref() {
+            Some(st) => format!(
+                "今日主动开口配额 {:.1}/{} 次",
+                st.weight_sum, agent_cfg.daily_quota
+            ),
+            None => "调度器未就绪".to_string(),
+        };
+        if let Ok(mut text) = text_query.get_mut(e) {
+            if **text != target {
+                **text = target;
+            }
+        }
+    }
+    if let Some(e) = ents.agent_memory_status {
+        let (hot_n, fact_n, refl_n) = match (hot.as_deref(), store.as_deref()) {
+            (Some(h), Some(s)) => (h.tail.len(), s.store.facts.len(), s.store.reflections.len()),
+            _ => (0, 0, 0),
+        };
+        let target = format!("热记忆 {hot_n} 轮 · 事实 {fact_n} 条 · 反思 {refl_n} 条");
+        if let Ok(mut text) = text_query.get_mut(e) {
+            if **text != target {
+                **text = target;
+            }
+        }
+        if let Ok(mut color) = color_query.get_mut(e) {
+            if color.0 != TEXT_DIM {
+                color.0 = TEXT_DIM;
+            }
+        }
+    }
 }

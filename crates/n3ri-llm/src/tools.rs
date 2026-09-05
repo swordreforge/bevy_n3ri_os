@@ -206,7 +206,6 @@ impl LlmClient {
         config: &LlmConfig,
         tools: &[ToolDef],
     ) -> Result<AssistantMessage, String> {
-        let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
         let wire: Vec<serde_json::Value> = messages
             .iter()
             .map(|m| {
@@ -216,7 +215,18 @@ impl LlmClient {
                 })
             })
             .collect();
-        let json = self.post_json(&url, &build_body_from_wire(&wire, config, tools), config)?;
+        self.send_with_tools_wire(&wire, config, tools)
+    }
+
+    /// wire 版（调用方已拼好含 tool 回填的混合历史时用）。
+    pub fn send_with_tools_wire(
+        &self,
+        wire: &[serde_json::Value],
+        config: &LlmConfig,
+        tools: &[ToolDef],
+    ) -> Result<AssistantMessage, String> {
+        let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
+        let json = self.post_json(&url, &build_body_from_wire(wire, config, tools), config)?;
         let assistant = parse_assistant_message(&json["choices"][0]["message"]);
         if assistant.is_empty() {
             let dump = serde_json::to_string(&json).unwrap_or_default();

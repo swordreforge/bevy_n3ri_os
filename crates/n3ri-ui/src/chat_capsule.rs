@@ -77,7 +77,7 @@ pub struct ChatRise(pub f32);
 #[derive(Resource)]
 pub(crate) struct ChatLlmState {
     pub pending: bool,
-    rx: Option<Mutex<Receiver<Result<String, String>>>>,
+    rx: Option<Mutex<Receiver<(Result<String, String>, String)>>>,
     system_prompt: Option<String>,
 }
 
@@ -789,6 +789,9 @@ fn chat_llm_dispatch(
     snap: Res<n3ri_agent::ContextSnapshot>,
     mut sched: ResMut<n3ri_agent::SchedulerState>,
     mut passive: ResMut<n3ri_agent::PassivePending>,
+    hot: Res<n3ri_agent::HotMemory>,
+    store: Res<n3ri_agent::MemoryStoreRes>,
+    agent_cfg: Res<n3ri_agent::AgentConfig>,
 ) {
         let g = &mut *bubbles;
     let Some(input) = state.submitted.take() else {
@@ -810,25 +813,39 @@ fn chat_llm_dispatch(
         EMOTION_PROMPT
     );
 
+    let user_text = input.clone();
     history.messages.push(Message::user(input));
     if history.messages.len() > 20 {
         history.messages.remove(0);
     }
 
+    let mem_block = n3ri_agent::build_memory_block(&store.store, &hot);
+    let mem_opt = if mem_block.is_empty() || !agent_cfg.memory_enabled {
+        None
+    } else {
+        Some(mem_block.as_str())
+    };
     let mut req = Vec::with_capacity(history.messages.len() + 1);
     req.push(Message::system(n3ri_agent::append_context(
         &system_prompt,
         &view,
         &snap,
+        mem_opt,
     )));
     req.extend(history.messages.iter().cloned());
 
     let (tx, rx) = channel();
     let client = LlmClient::new();
     let cfg = n3ri_llm::load_config();
+    let mem_on = agent_cfg.memory_enabled;
     thread::spawn(move || {
-        let result = client.send(&req, &cfg);
-        let _ = tx.send(result);
+        let result = if mem_on {
+            let store = n3ri_agent::MemoryStore::load();
+            n3ri_agent::turn::run_recall_loop(&client, &req, &cfg, &store)
+        } else {
+            client.send(&req, &cfg)
+        };
+        let _ = tx.send((result, user_text));
     });
     let born = time.elapsed_secs();
     g.now = born;
@@ -851,6 +868,9 @@ fn chat_llm_poll(
     mut bubbles: ResMut<ChatBubbleState>,
     mut emotion_events: MessageWriter<ChatEmotionEvent>,
     mut passive: ResMut<n3ri_agent::PassivePending>,
+    mut hot: ResMut<n3ri_agent::HotMemory>,
+    store: Res<n3ri_agent::MemoryStoreRes>,
+    agent_cfg: Res<n3ri_agent::AgentConfig>,
 ) {
         let g = &mut *bubbles;
     if !llm.pending {
@@ -863,12 +883,13 @@ fn chat_llm_poll(
     };
     let recv = rx.lock().unwrap().try_recv();
     match recv {
-        Ok(Ok(response)) => {
+        Ok((Ok(response), user_text)) => {
             let (cleaned, emotion) = extract_emotion(&response);
             if let Some(e) = emotion {
                 emotion_events.write(ChatEmotionEvent(e));
             }
             history.messages.push(Message::assistant(cleaned.clone()));
+            n3ri_agent::record_turn(&mut hot, &store.store, &user_text, &cleaned, &agent_cfg);
             let sentences = split_sentences(&cleaned);
             if sentences.is_empty() {
                 g.queue.push_back("……".to_string());
@@ -881,7 +902,7 @@ fn chat_llm_poll(
             llm.rx = None;
             passive.0 = false;
         }
-        Ok(Err(e)) => {
+        Ok((Err(e), _)) => {
             if g.shown.back().map(|l| l.text == THINKING_TEXT).unwrap_or(false) {
                 g.shown.pop_back();
             }

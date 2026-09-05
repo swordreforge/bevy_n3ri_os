@@ -27,7 +27,15 @@ pub use scheduler::{
     load_scheduler, mark_session_start, save_scheduler, scheduler_tick, GateResult, HookKind,
     SchedulerState,
 };
-pub use turn::{AgentOutbox, AgentTurn, PassivePending, ProactiveFire, TurnPlugin};
+pub use tools::{
+    notify_send_argv, outside_from_tool_output, poll_outside_view, send_desktop_notification,
+    PendingEffect, ToolOutcome, ToolRegistry, NOTIFY_MESSAGE_MAX_CHARS, NOTIFY_TITLE_MAX_CHARS,
+    OPEN_APP_ALLOW,
+};
+pub use tools::niri::NiriCtl;
+pub use turn::{
+    AgentOutbox, AgentTurn, PassivePending, ProactiveFire, ToolLoopOutput, TurnPlugin,
+};
 pub use world::{
     classify_activity, classify_presence, context_tick, is_transitioning, AgentWorldView,
     ContextSnapshot, OutsideView, OutsideWindow, WallpaperMode, WindowInfo,

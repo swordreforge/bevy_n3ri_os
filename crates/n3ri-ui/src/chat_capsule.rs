@@ -77,7 +77,7 @@ pub struct ChatRise(pub f32);
 #[derive(Resource)]
 pub(crate) struct ChatLlmState {
     pub pending: bool,
-    rx: Option<Mutex<Receiver<(Result<String, String>, String)>>>,
+    rx: Option<Mutex<Receiver<(Result<String, String>, String, Vec<n3ri_agent::PendingEffect>)>>>,
     system_prompt: Option<String>,
 }
 
@@ -699,22 +699,44 @@ const EMOTION_TAGS: &[(&str, &str)] = &[
 
 const EMOTION_PROMPT: &str = "\n\n【输出格式附加要求】每次回复的最末尾,附加且仅附加一个情绪标签,只能从以下选择:[开心] [难过] [生气] [惊讶] [困惑] [得意] [害羞] [疲惫] [平静]。标签只出现一次,放在整条回复的最后。";
 
-/// Agent 主动轮投递：outbox → inbox（chat 侧）+ emotion 转发。
-/// outbox 由 `n3ri-agent` 的 `proactive_poll` 写入，本桥只搬运，不做决策。
+/// Agent 主动轮投递：outbox → inbox（chat 侧）+ emotion 转发 + tool 副作用落事件。
+/// outbox 由 `n3ri-agent` 的 `proactive_poll` / 被动 `chat_llm_poll` 写入，
+/// 本桥只搬运，不做决策。开窗走 `AppLaunchEvent`（dock reader 消费），
+/// 通知走 `NotificationEvent`（agent_bridge 的 notification_sender 消费）。
 fn agent_outbox_bridge(
     mut outbox: ResMut<n3ri_agent::AgentOutbox>,
     mut inbox: ResMut<AgentBubbleInbox>,
     mut emotion_events: MessageWriter<ChatEmotionEvent>,
+    mut launch_events: MessageWriter<n3ri_core::events::AppLaunchEvent>,
+    mut notify_events: MessageWriter<n3ri_core::events::NotificationEvent>,
 ) {
     if !outbox.dirty() {
         return;
     }
-    let (sentences, emotion) = outbox.take_out();
+    let (sentences, emotion, effects) = outbox.take_out();
     for s in sentences {
         inbox.items.push_back(s);
     }
     if let Some(e) = emotion {
         emotion_events.write(ChatEmotionEvent(e));
+    }
+    for effect in effects {
+        match effect {
+            n3ri_agent::PendingEffect::OpenApp { app_id } => {
+                launch_events.write(n3ri_core::events::AppLaunchEvent {
+                    app_id,
+                    window_title: None,
+                });
+            }
+            n3ri_agent::PendingEffect::Notify { title, message } => {
+                notify_events.write(n3ri_core::events::NotificationEvent {
+                    title,
+                    message,
+                    icon: None,
+                    duration: None,
+                });
+            }
+        }
     }
 }
 
@@ -837,15 +859,13 @@ fn chat_llm_dispatch(
     let (tx, rx) = channel();
     let client = LlmClient::new();
     let cfg = n3ri_llm::load_config();
-    let mem_on = agent_cfg.memory_enabled;
+    // M4：被动轮全量走 tool-loop（recall 由 defs_for 按 memory_enabled 门控，
+    // open_app/notify/niri 与记忆开关无关，始终可用）。
+    let agent_cfg = agent_cfg.clone();
     thread::spawn(move || {
-        let result = if mem_on {
-            let store = n3ri_agent::MemoryStore::load();
-            n3ri_agent::turn::run_recall_loop(&client, &req, &cfg, &store)
-        } else {
-            client.send(&req, &cfg)
-        };
-        let _ = tx.send((result, user_text));
+        let store = n3ri_agent::MemoryStore::load();
+        let out = n3ri_agent::turn::run_tool_loop(&client, &req, &cfg, &store, &agent_cfg);
+        let _ = tx.send((out.text, user_text, out.effects));
     });
     let born = time.elapsed_secs();
     g.now = born;
@@ -870,6 +890,7 @@ fn chat_llm_poll(
     mut passive: ResMut<n3ri_agent::PassivePending>,
     mut hot: ResMut<n3ri_agent::HotMemory>,
     mut store: ResMut<n3ri_agent::MemoryStoreRes>,
+    mut outbox: ResMut<n3ri_agent::AgentOutbox>,
     agent_cfg: Res<n3ri_agent::AgentConfig>,
 ) {
         let g = &mut *bubbles;
@@ -883,13 +904,15 @@ fn chat_llm_poll(
     };
     let recv = rx.lock().unwrap().try_recv();
     match recv {
-        Ok((Ok(response), user_text)) => {
+        Ok((Ok(response), user_text, effects)) => {
             let (cleaned, emotion) = extract_emotion(&response);
             if let Some(e) = emotion {
                 emotion_events.write(ChatEmotionEvent(e));
             }
             history.messages.push(Message::assistant(cleaned.clone()));
             n3ri_agent::record_turn(&mut hot, &mut store.store, &user_text, &cleaned, &agent_cfg);
+            // tool 副作用（open_app/notify）经 outbox 交 agent_outbox_bridge 落事件。
+            outbox.push_effects(effects);
             let sentences = split_sentences(&cleaned);
             if sentences.is_empty() {
                 g.queue.push_back("……".to_string());
@@ -902,7 +925,7 @@ fn chat_llm_poll(
             llm.rx = None;
             passive.0 = false;
         }
-        Ok((Err(e), _)) => {
+        Ok((Err(e), _, _)) => {
             if g.shown.back().map(|l| l.text == THINKING_TEXT).unwrap_or(false) {
                 g.shown.pop_back();
             }

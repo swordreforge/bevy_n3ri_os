@@ -14,7 +14,7 @@ use n3ri_llm::{LlmClient, Message};
 
 use crate::config::AgentConfig;
 use crate::emotion::split_sentences;
-use crate::memory::{build_memory_block, handle_recall_memory, HotMemory, MemoryStore};
+use crate::memory::{build_memory_block, HotMemory, MemoryStore};
 use crate::prompt::build_context_block;
 use crate::scheduler::HookKind;
 use crate::world::{AgentWorldView, ContextSnapshot};
@@ -49,10 +49,12 @@ pub struct AgentTurn {
 pub struct PassivePending(pub bool);
 
 /// Agent → UI 的投递桥（`n3ri-ui` 侧 `agent_outbox_bridge` 消费进气泡/情绪）。
+/// effects 由 `n3ri-ui` 侧 `agent_effects_bridge` 落 `MessageWriter`（开窗/通知）。
 #[derive(Resource, Default)]
 pub struct AgentOutbox {
     pub sentences: Vec<String>,
     pub emotion: Option<String>,
+    pub effects: Vec<crate::tools::PendingEffect>,
     pub(crate) dirty: bool,
 }
 
@@ -61,11 +63,12 @@ impl AgentOutbox {
         self.dirty
     }
 
-    pub fn take_out(&mut self) -> (Vec<String>, Option<String>) {
+    pub fn take_out(&mut self) -> (Vec<String>, Option<String>, Vec<crate::tools::PendingEffect>) {
         self.dirty = false;
         (
             std::mem::take(&mut self.sentences),
             self.emotion.take(),
+            std::mem::take(&mut self.effects),
         )
     }
 
@@ -74,6 +77,14 @@ impl AgentOutbox {
         if emotion.is_some() {
             self.emotion = emotion;
         }
+        self.dirty = true;
+    }
+
+    pub fn push_effects(&mut self, effects: Vec<crate::tools::PendingEffect>) {
+        if effects.is_empty() {
+            return;
+        }
+        self.effects.extend(effects);
         self.dirty = true;
     }
 }
@@ -93,6 +104,7 @@ struct ProactiveQueue {
 pub struct TurnOutput {
     pub kind: HookKind,
     pub text: Result<String, String>,
+    pub effects: Vec<crate::tools::PendingEffect>,
 }
 
 /// chat 被动侧在用户提交时调用：配额升级（10min 窗口）由 scheduler 状态机记账。
@@ -159,21 +171,33 @@ fn load_world_prompt() -> String {
         .unwrap_or_else(|_| "你是 Nori,一个被困在蓝色数字空间里的白发 AI 女孩。".to_string())
 }
 
-/// recall tool-loop（被动/主动共用）：`send_with_tools` → 执行 `recall_memory`
+/// tool-loop 执行结果：终答文本 + 攒出的主线程副作用。
+pub struct ToolLoopOutput {
+    pub text: Result<String, String>,
+    pub effects: Vec<crate::tools::PendingEffect>,
+}
+
+impl std::fmt::Debug for ToolLoopOutput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ToolLoopOutput")
+            .field("text", &self.text)
+            .field("effects", &self.effects.len())
+            .finish()
+    }
+}
+
+/// 全量 tool-loop（被动/主动共用）：`send_with_tools` → `ToolRegistry::execute`
 /// → 回填 → 终答。max 3 轮；3 轮用完强制去 tools 拿终答。永不抛错。
-pub fn run_recall_loop(
+/// effects 在循环中攒起来随终答一起带回主线程落 ECS。
+pub fn run_tool_loop(
     client: &LlmClient,
     history: &[Message],
     config: &n3ri_llm::LlmConfig,
     store: &MemoryStore,
-) -> Result<String, String> {
+    agent_cfg: &AgentConfig,
+) -> ToolLoopOutput {
     use n3ri_llm::{assistant_to_wire, tool_to_wire};
-    let recall = n3ri_llm::ToolDef {
-        name: "recall_memory",
-        description: "检索 Nori 的温记忆（facts/reflections）。想不起用户的事时调用。",
-        parameters: n3ri_llm::recall_memory_schema(),
-    };
-    let tools = [recall];
+    let tools = crate::tools::ToolRegistry::defs_for(agent_cfg);
     let wire_history: Vec<serde_json::Value> = history
         .iter()
         .map(|m| {
@@ -185,36 +209,49 @@ pub fn run_recall_loop(
         .collect();
     let mut wire = wire_history;
     let mut final_text: Option<String> = None;
+    let mut effects = Vec::new();
+    let niri = crate::tools::niri::NiriCtl::default();
     for _ in 0..TOOL_LOOP_MAX {
-        let assistant = client.send_with_tools_wire(&wire, config, &tools)?;
+        let assistant = match client.send_with_tools_wire(&wire, config, &tools) {
+            Ok(a) => a,
+            Err(e) => return ToolLoopOutput { text: Err(e), effects },
+        };
         if assistant.tool_calls.is_empty() {
             final_text = Some(assistant.content);
             break;
         }
         wire.push(assistant_to_wire(&assistant));
         for call in &assistant.tool_calls {
-            let env = if call.name == "recall_memory" {
-                handle_recall_memory(store, &call.arguments)
-            } else {
-                n3ri_llm::ToolEnvelope::err(format!("未知工具 {}", call.name))
-            };
-            wire.push(tool_to_wire(call, &env));
+            let out =
+                crate::tools::ToolRegistry::execute(&call.name, &call.arguments, store, agent_cfg, &niri);
+            wire.push(tool_to_wire(call, &out.envelope));
+            effects.extend(out.effects);
         }
         if !assistant.content.trim().is_empty() {
             final_text = Some(assistant.content.clone());
         }
     }
     match final_text {
-        Some(t) if !t.trim().is_empty() => Ok(t),
-        _ => {
-            let assistant = client.send_with_tools_wire(&wire, config, &[])?;
-            if assistant.content.trim().is_empty() {
-                Err("模型返回空 content".to_string())
-            } else {
-                Ok(assistant.content)
+        Some(t) if !t.trim().is_empty() => ToolLoopOutput { text: Ok(t), effects },
+        _ => match client.send_with_tools_wire(&wire, config, &[]) {
+            Ok(assistant) if !assistant.content.trim().is_empty() => {
+                ToolLoopOutput { text: Ok(assistant.content), effects }
             }
-        }
+            Ok(_) => ToolLoopOutput { text: Err("模型返回空 content".to_string()), effects },
+            Err(e) => ToolLoopOutput { text: Err(e), effects },
+        },
     }
+}
+
+/// recall tool-loop（被动/主动共用）：`run_tool_loop` 的薄兼容壳（只取文本）。
+/// 新调用方请直接用 `run_tool_loop`。
+pub fn run_recall_loop(
+    client: &LlmClient,
+    history: &[Message],
+    config: &n3ri_llm::LlmConfig,
+    store: &MemoryStore,
+) -> Result<String, String> {
+    run_tool_loop(client, history, config, store, &AgentConfig::default()).text
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -259,10 +296,11 @@ fn proactive_dispatch(
     let client = LlmClient::new();
     let config = n3ri_llm::load_config();
     let kind = next.kind;
+    let agent_cfg = cfg.clone();
     thread::spawn(move || {
         let store = MemoryStore::load();
-        let text = run_recall_loop(&client, &history, &config, &store);
-        let _ = tx.send(TurnOutput { kind, text });
+        let out = run_tool_loop(&client, &history, &config, &store, &agent_cfg);
+        let _ = tx.send(TurnOutput { kind, text: out.text, effects: out.effects });
     });
     turn.rx = Some(Mutex::new(rx));
     turn.pending = true;
@@ -294,6 +332,7 @@ fn proactive_poll(mut turn: ResMut<AgentTurn>, mut outbox: ResMut<AgentOutbox>) 
                         sentences.push("……".to_string());
                     }
                     outbox.push(sentences, emotion);
+                    outbox.push_effects(out.effects);
                 }
                 Err(_) => {
                     if let Some(fb) = fallback_for(out.kind) {

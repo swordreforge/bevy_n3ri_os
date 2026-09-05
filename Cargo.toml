@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/n3ri-core",
     "crates/n3ri-llm",
+    "crates/n3ri-agent",
     "crates/n3ri-ui",
     "crates/n3ri-live2d",
     # "crates/n3ri-render",

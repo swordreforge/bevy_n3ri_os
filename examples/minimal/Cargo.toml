@@ -34,6 +34,7 @@ bevy = { workspace = true, features = [
 ] }
 n3ri-core = { path = "../../crates/n3ri-core" }
 n3ri-ui = { path = "../../crates/n3ri-ui" }
+n3ri-agent = { path = "../../crates/n3ri-agent" }
 n3ri-live2d = { path = "../../crates/n3ri-live2d" }
 lofty = "0.22"
 # 壁纸模式：layer-shell 壁纸 surface + 全局指针卫星（XQueryPointer 轮询，触摸板/鼠标通吃）

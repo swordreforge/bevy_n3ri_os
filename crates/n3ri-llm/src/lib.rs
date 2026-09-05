@@ -2,7 +2,7 @@
 //!
 //! 参考 live2d-viewer 的 ai 模块,只保留游戏所需的最小面:
 //! 阻塞式请求、后台线程流式请求(SSE)、配置持久化。
-//! 工具调用 / 视觉 / TTS 待具体游戏需要时再扩展。
+//! 工具调用 wire 类型见 [`tools`]；视觉 / TTS 待具体游戏需要时再扩展。
 
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
@@ -10,6 +10,13 @@ use std::sync::mpsc::Sender;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+
+pub mod tools;
+pub use tools::{
+    builtin_tool_defs, niri_spawn_schema, niri_window_schema, niri_windows_schema,
+    notify_schema, open_app_schema, recall_memory_schema, AssistantMessage, ToolCallRequest,
+    ToolDef, ToolEnvelope,
+};
 
 // ============================
 //  消息类型
@@ -127,7 +134,7 @@ pub enum StreamEvent {
 //  客户端
 // ============================
 pub struct LlmClient {
-    http: reqwest::blocking::Client,
+    pub(crate) http: reqwest::blocking::Client,
 }
 
 impl Default for LlmClient {

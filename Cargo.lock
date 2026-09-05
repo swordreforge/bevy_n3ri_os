@@ -6495,6 +6495,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "n3ri-agent"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "chrono",
+ "n3ri-core",
+ "n3ri-llm",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "n3ri-core"
 version = "0.1.0"
 dependencies = [
@@ -6534,6 +6546,7 @@ dependencies = [
  "bevy_embedded_assets",
  "bevy_live_wallpaper",
  "lofty",
+ "n3ri-agent",
  "n3ri-core",
  "n3ri-live2d",
  "n3ri-ui",

@@ -1,0 +1,127 @@
+# What is include in niri msg sys?
+> A quick and fast way for ipc with an exsist niri instance,valuable for function calling and tool use for agent.
+## 1.total:
+```sh
+niri msg --help
+Communicate with the running niri instance
+
+Usage: niri msg [OPTIONS] <COMMAND>
+
+Commands:
+  outputs           List connected outputs
+  workspaces        List workspaces
+  windows           List open windows
+  layers            List open layer-shell surfaces
+  keyboard-layouts  Get the configured keyboard layouts
+  focused-output    Print information about the focused output
+  focused-window    Print information about the focused window
+  pick-window       Pick a window with the mouse and print information about it
+  pick-color        Pick a color from the screen with the mouse
+  action            Perform an action
+  output            Change output configuration temporarily
+  event-stream      Start continuously receiving events from the compositor
+  version           Print the version of the running niri instance
+  request-error     Request an error from the running niri instance
+  overview-state    Print the overview state
+  casts             List screencasts
+  help              Print this message or the help of the given subcommand(s)
+
+Options:
+  -j, --json  Format output as JSON
+  -h, --help  Print help
+```
+1.1 **outputs** is for display hardware status,not so important
+```exp
+niri msg -j outputs
+{"eDP-1":{"name":"eDP-1","make":"Samsung Display Corp.","model":"0x416E","serial":null,"physical_size":[340,190],"modes":[{"width":2880,"height":1620,"refresh_rate":120002,"is_preferred":true},{"width":2880,"height":1620,"refresh_rate":60001,"is_preferred":false}],"current_mode":0,"is_custom_mode":false,"vrr_supported":false,"vrr_enabled":false,"logical":{"x":0,"y":0,"width":1920,"height":1080,"scale":1.5,"transform":"Normal"}}}
+```
+1.2 **workspace** for niri(can add to basic statu sense)
+```exp
+niri msg -j workspaces
+[{"id":3,"idx":2,"name":null,"output":"eDP-1","is_urgent":false,"is_active":false,"is_focused":false,"active_window_id":null},{"id":1,"idx":1,"name":null,"output":"eDP-1","is_urgent":false,"is_active":true,"is_focused":true,"active_window_id":23}]
+```
+1.3 **windows** list all opened window from the niri instance (important but need to be filtered)
+```exp
+niri msg -j windows
+[{"id":22,"title":"introducing_of_niri_msg.txt — introducing_of_niri_msg.txt","app_id":"dev.zed.Zed","pid":25890,"workspace_id":1,"is_focused":false,"is_floating":false,"is_urgent":false,"layout":{"pos_in_scrolling_layout":[2,1],"tile_size":[1920.0,1080.0],"window_size":[1920,1080],"tile_pos_in_workspace_view":null,"window_offset_in_tile":[0.0,0.0]},"focus_timestamp":{"secs":8532,"nanos":640157837}},{"id":23,"title":"niri msg -j windows ~","app_id":"kitty","pid":18908,"workspace_id":1,"is_focused":true,"is_floating":false,"is_urgent":false,"layout":{"pos_in_scrolling_layout":[3,1],"tile_size":[942.0,1056.0],"window_size":[942,1056],"tile_pos_in_workspace_view":null,"window_offset_in_tile":[0.0,0.0]},"focus_timestamp":{"secs":8579,"nanos":769012462}},{"id":15,"title":"⌘ Agent Architecture · muse-spark-1.3-contributor","app_id":"Alacritty","pid":22060,"workspace_id":1,"is_focused":false,"is_floating":false,"is_urgent":false,"layout":{"pos_in_scrolling_layout":[4,1],"tile_size":[942.0,1056.0],"window_size":[942,1056],"tile_pos_in_workspace_view":null,"window_offset_in_tile":[0.0,0.0]},"focus_timestamp":{"secs":8566,"nanos":476223492}},{"id":21,"title":"~","app_id":"kitty","pid":18908,"workspace_id":1,"is_focused":false,"is_floating":false,"is_urgent":false,"layout":{"pos_in_scrolling_layout":[5,1],"tile_size":[942.0,1056.0],"window_size":[942,1056],"tile_pos_in_workspace_view":null,"window_offset_in_tile":[0.0,0.0]},"focus_timestamp":{"secs":8574,"nanos":966168470}},{"id":9,"title":"norios --wallpaper ~","app_id":"kitty","pid":18908,"workspace_id":1,"is_focused":false,"is_floating":false,"is_urgent":false,"layout":{"pos_in_scrolling_layout":[1,1],"tile_size":[942.0,1056.0],"window_size":[942,1056],"tile_pos_in_workspace_view":null,"window_offset_in_tile":[0.0,0.0]},"focus_timestamp":{"secs":8578,"nanos":836175804}}]
+```
+1.4 **layers** not so important for n3ri-minimal,just for unimportant chores.
+niri msg -j layers
+[{"namespace":"dms:bar","output":"eDP-1","layer":"Top","keyboard_interactivity":"None"},{"namespace":"egl_background_43","output":"eDP-1","layer":"Bottom","keyboard_interactivity":"OnDemand"},{"namespace":"dms:dock","output":"eDP-1","layer":"Top","keyboard_interactivity":"None"}]
+
+1.5 **keyboard-layouts** just optional,less chance for use
+niri msg -j keyboard-layouts
+{"names":["English (US)"],"current_idx":0}
+
+1.6 **focused-output** same as the output,but focused one.(lower priority)
+niri msg -j focused-output
+{"name":"eDP-1","make":"Samsung Display Corp.","model":"0x416E","serial":null,"physical_size":[340,190],"modes":[{"width":2880,"height":1620,"refresh_rate":120002,"is_preferred":true},{"width":2880,"height":1620,"refresh_rate":60001,"is_preferred":false}],"current_mode":0,"is_custom_mode":false,"vrr_supported":false,"vrr_enabled":false,"logical":{"x":0,"y":0,"width":1920,"height":1080,"scale":1.5,"transform":"Normal"}}
+
+明白了，你要求完全按照原始文件（`introducing_of_niri_msg.txt`）的格式和语言风格来补全剩余命令。原始文件用的是**英文描述为主**，夹杂少量中文注释，每条命令以 `1.x` 编号，提供简短说明和示例（`exp` 代码块）。下面我从 `1.7` 开始，逐条补全所有剩余命令，`focused-window` 重点详细，`action` 仅占位。
+
+---
+
+```txt
+1.7 **focused-window** (important for agent context, get current focused window details)
+```exp
+niri msg -j focused-window
+{"id":23,"title":"niri msg -j windows ~","app_id":"kitty","pid":18908,"workspace_id":1,"is_focused":true,"is_floating":false,"is_urgent":false,"layout":{"pos_in_scrolling_layout":[3,1],"tile_size":[942.0,1056.0],"window_size":[942,1056],"tile_pos_in_workspace_view":null,"window_offset_in_tile":[0.0,0.0]},"focus_timestamp":{"secs":8579,"nanos":769012462}}
+```
+This is the primary command for knowing which window the user is interacting with. It returns the same structure as a single window from `windows`. If no window is focused (e.g., empty workspace), it may return null or an error; handle accordingly.
+
+1.8 **pick-window** - interactively pick a window with mouse and print its info (same output as focused-window)
+```exp
+niri msg -j pick-window
+# (click a window, then output same JSON as above)
+```
+
+1.9 **pick-color** - pick a color from the screen with mouse click
+```exp
+niri msg pick-color
+# returns something like "#RRGGBB" (example: #aabbcc)
+```
+
+1.10 **action** - perform a window management action (placeholder, details to be filled later)
+```exp
+niri msg action <subcommand> [args...]
+# See `niri msg action --help` for current available subcommands.
+# This will be expanded in future for moving/resizing/switching workspaces, etc.
+```
+
+1.11 **output** - temporarily change output configuration (resolution, scale, transform) - not persistent
+```exp
+niri msg output eDP-1 --mode 1920x1080@60 --scale 1.0 --transform Normal
+# No output on success.
+```
+
+1.12 **event-stream** - continuously receive compositor events (window focus, workspace changes, etc.) as JSON lines
+```exp
+niri msg event-stream
+{"type":"window_focused","window_id":23,...}
+{"type":"workspace_switched","workspace_id":2,...}
+# Streams until interrupted.
+```
+
+1.13 **version** - print the version of the running niri instance
+```exp
+niri msg version
+niri 0.1.0 (commit 123abc)
+```
+
+1.14 **request-error** - force an error for debugging purposes
+```exp
+niri msg request-error
+# returns an error string.
+```
+
+1.15 **overview-state** - print the current overview mode state
+```exp
+niri msg -j overview-state
+{"is_active":false,"layout":"grid"}
+```
+
+1.16 **casts** - list active screencast sessions
+```exp
+niri msg -j casts
+[{"id":1,"output":"eDP-1","application":"obs"}]
+```

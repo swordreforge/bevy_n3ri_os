@@ -46,6 +46,7 @@ use crate::cursor::CursorPosition;
 use crate::dock::{AppVisible, Dock};
 use crate::font::N3riFonts;
 use crate::input_focus::{TextInputFocus, TextInputOwner};
+use crate::scroll::UiWheelConsumed;
 use crate::topbar::FocusedTitle;
 use crate::window::{spawn_window, AppWindow};
 
@@ -369,7 +370,8 @@ impl Plugin for BrowserPlugin {
                         .after(crate::window::WindowFocusSet),
                     browser_page_input
                         .after(browser_bar_input)
-                        .after(crate::window::WindowFocusSet),
+                        .after(crate::window::WindowFocusSet)
+                        .after(crate::scroll::wheel_dispatch),
                     browser_drive
                         .after(browser_page_input)
                         .after(crate::window::WindowFocusSet),
@@ -873,6 +875,7 @@ fn browser_page_input(
     mut ime: MessageReader<Ime>,
     mut buttons: MessageReader<MouseButtonInput>,
     mut wheels: MessageReader<MouseWheel>,
+    ui_consumed: Res<UiWheelConsumed>,
     mut last_content: Local<Option<Vec2>>,
     mut prev_page: Local<bool>,
 ) {
@@ -1000,6 +1003,11 @@ fn browser_page_input(
     }
 
     for ev in wheels.read() {
+        if ui_consumed.0 {
+            // UI 滚动链已接管本帧滚轮（如浏览器窗口内的通用滚动区），
+            // 不再转发给 Servo，避免一滚两处生效。
+            continue;
+        }
         let (dx, dy, mode) = match ev.unit {
             MouseScrollUnit::Line => (
                 f64::from(ev.x) * 38.0,

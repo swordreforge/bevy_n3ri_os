@@ -439,7 +439,7 @@ fn mail_sync_ui(
     needs_q: Query<Entity, With<MailNeedsSync>>,
     mut count_q: Query<(&MailFolderCount, &mut Text)>,
     child_of_q: Query<&bevy::prelude::ChildOf>,
-    mut areas: Query<&mut ScrollableArea>,
+    mut areas: Query<&mut ScrollPosition, With<ScrollableArea>>,
     mut commands: Commands,
     mut sync_count: Local<u32>,
     fonts: Res<N3riFonts>,
@@ -549,8 +549,8 @@ fn mail_sync_ui(
 
         let mut cur = child_of_q.get(view_e).ok().map(|c| c.0);
         while let Some(p) = cur {
-            if let Ok(mut area) = areas.get_mut(p) {
-                area.scroll_offset = 0.0;
+            if let Ok(mut pos) = areas.get_mut(p) {
+                pos.y = 0.0;
                 break;
             }
             cur = child_of_q.get(p).ok().map(|c| c.0);

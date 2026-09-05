@@ -584,7 +584,7 @@ fn signal_sync_ui(
     view_q: Query<Entity, With<SignalViewContent>>,
     needs_q: Query<Entity, With<SignalNeedsSync>>,
     child_of_q: Query<&bevy::prelude::ChildOf>,
-    mut view_areas: Query<&mut ScrollableArea>,
+    mut view_areas: Query<&mut ScrollPosition, With<ScrollableArea>>,
     mut header_name_q: Query<&mut Text, With<SignalHeaderName>>,
     mut header_managed_q: Query<&mut Visibility, With<SignalHeaderManaged>>,
     mut commands: Commands,
@@ -723,8 +723,8 @@ fn signal_sync_ui(
 
         let mut cur = child_of_q.get(view_e).ok().map(|c| c.0);
         while let Some(p) = cur {
-            if let Ok(mut area) = view_areas.get_mut(p) {
-                area.scroll_offset = 0.0;
+            if let Ok(mut pos) = view_areas.get_mut(p) {
+                pos.y = 0.0;
                 break;
             }
             cur = child_of_q.get(p).ok().map(|c| c.0);

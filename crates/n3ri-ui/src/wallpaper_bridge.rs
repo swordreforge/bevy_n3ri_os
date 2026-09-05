@@ -299,7 +299,7 @@ fn inject_mouse_buttons(
 /// 滚轮注入：两条路径合并——vendor 补丁的 Wayland `wl_pointer.axis` 累积
 /// （`WallpaperPointerState.scroll`，PostUpdate 累积、本系统消费后清零）与卫星
 /// XI2 raw 事件增量（`frame.scroll`）。指针位于 surface 上时写成 `MouseWheel`
-/// 消息（与按钮注入同门控），由 scroll_wheel_system / 终端滚动消费。窗口字段用
+/// 消息（与按钮注入同门控），由 scroll.rs 的 wheel_dispatch 归一化后消费 / 终端滚动消费。窗口字段用
 /// PLACEHOLDER——消费方只读 x/y，且壁纸模式无真实窗口实体。
 /// 自然滚动（设置 → 触控）只反转触摸板轴（vendor 路径），卫星真实鼠标滚轮保持传统方向。
 fn inject_mouse_wheel(

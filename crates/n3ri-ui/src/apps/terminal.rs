@@ -1,5 +1,5 @@
 use bevy::input::keyboard::{Key, KeyCode, KeyboardInput};
-use bevy::input::mouse::{MouseButton, MouseWheel};
+use bevy::input::mouse::{MouseButton, MouseScrollUnit, MouseWheel};
 use bevy::prelude::*;
 use bevy::text::{LineHeight, PositionedGlyph, TextLayoutInfo};
 use bevy::window::Ime;
@@ -12,6 +12,7 @@ use crate::cursor::CursorPosition;
 use crate::dock::IsDragging;
 use crate::font::{FontContext, N3riFonts};
 use crate::input_focus::{TextInputFocus, TextInputOwner};
+use crate::scroll::UiWheelConsumed;
 use crate::topbar::FocusedTitle;
 
 pub struct TerminalPlugin;
@@ -23,7 +24,7 @@ impl Plugin for TerminalPlugin {
             (
                 terminal_input.after(terminal_selection),
                 terminal_ime.after(terminal_selection),
-                terminal_sync_output,
+                terminal_sync_output.after(crate::scroll::wheel_dispatch),
                 terminal_selection
                     .after(terminal_sync_output)
                     .after(crate::window::WindowFocusSet),
@@ -128,6 +129,8 @@ pub struct TerminalState {
     pending: Arc<Mutex<String>>,
     scroll_offset: usize,
     stick_to_bottom: bool,
+    /// Pixel 滚轮折算行数时的亚行余量（触摸板连续微增量逐帧累积）。
+    wheel_accum: f32,
     initialized: bool,
     echo_col: usize,
     vt_mode: VtMode,
@@ -151,6 +154,7 @@ impl Default for TerminalState {
             pending: Arc::new(Mutex::new(String::new())),
             scroll_offset: 0,
             stick_to_bottom: true,
+            wheel_accum: 0.0,
             initialized: false,
             echo_col: 0,
             vt_mode: VtMode::Ground,
@@ -271,6 +275,7 @@ impl TerminalState {
         self.input_buf.clear();
         self.initialized = false;
         self.scroll_offset = 0;
+        self.wheel_accum = 0.0;
         self.stick_to_bottom = true;
         self.echo_col = 0;
         self.vt_mode = VtMode::Ground;
@@ -293,6 +298,17 @@ impl TerminalState {
             .len()
             .saturating_sub(self.scroll_offset)
             .saturating_sub(viewport_lines)
+    }
+
+    fn consume_wheel_rows(&mut self, wheel: &MouseWheel) -> isize {
+        let rows = match wheel.unit {
+            MouseScrollUnit::Line => wheel.y * 3.0,
+            MouseScrollUnit::Pixel => wheel.y / LINE_HEIGHT,
+        };
+        self.wheel_accum += rows;
+        let whole = self.wheel_accum.trunc() as isize;
+        self.wheel_accum -= whole as f32;
+        whole
     }
 
     fn vt_feed(&mut self, ch: char) {
@@ -686,6 +702,7 @@ fn terminal_ime(
 fn terminal_sync_output(
     mut state: ResMut<TerminalState>,
     mut mouse_wheel: MessageReader<MouseWheel>,
+    ui_consumed: Res<UiWheelConsumed>,
     focused: Res<FocusedTitle>,
     cursor: Res<CursorPosition>,
     output: Query<(&ComputedNode, &UiGlobalTransform), With<TerminalOutput>>,
@@ -725,8 +742,8 @@ fn terminal_sync_output(
                 })
         });
 
-    for wheel in mouse_wheel.read().filter(|_| cursor_over_terminal) {
-        let delta = (wheel.y * 3.0).round() as isize;
+    for wheel in mouse_wheel.read().filter(|_| cursor_over_terminal && !ui_consumed.0) {
+        let delta = state.consume_wheel_rows(wheel);
         if delta > 0 {
             state.scroll_offset = (state.scroll_offset + delta as usize)
                 .min(state.lines.len().saturating_sub(1));
@@ -1021,6 +1038,7 @@ fn clear_terminal_screen(state: &mut TerminalState) {
     state.lines.clear();
     state.lines.push(String::new());
     state.scroll_offset = 0;
+    state.wheel_accum = 0.0;
     state.stick_to_bottom = true;
 }
 

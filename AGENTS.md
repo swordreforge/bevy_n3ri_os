@@ -78,7 +78,7 @@ assets/shaders/     # WGSL shaders (desktop_background.wgsl)
   按钮 diff → `MouseButtonInput` 消息（避免与 `ButtonInput` 每帧 clear 竞态）；
   滚轮 = `inject_mouse_wheel` 合并两条路径——vendored `WallpaperPointerState.scroll`
   （Wayland `wl_pointer.axis`，真实触摸板/鼠标滚轮）与卫星 `w dx dy`（仅 XTEST 合成事件可达），
-  写成 `MouseWheel` 消息由 `scroll_wheel_system` 消费；`WallpaperPointerState.scroll` 消费后清零；
+  写成 `MouseWheel` 消息；`WallpaperPointerState.scroll` 消费后清零；
   `wallpaper_ui_focus_system` 复刻 bevy `ui_focus_system`（原版对 Image 相机直接跳过 Interaction）
   并 `.after(ui_focus_system)` 覆盖其重置结果。
 - 卫星协议：stdout 行流 `x y`（XQueryPointer 轮询的桌面全局绝对坐标，位置变化才发行，~120Hz）；
@@ -92,6 +92,23 @@ assets/shaders/     # WGSL shaders (desktop_background.wgsl)
 因此依赖必须 vendored（`vendor/bevy_live_wallpaper`，0.5.0 为最终版本）：`Dispatch<wl_pointer>`
 处理 `Axis` 事件 → `PendingPointerEventKind::Scroll` → `apply_pointer_events` 累积进
 `WallpaperPointerState.scroll`。**不要改回 crates.io 版本**，否则真实滚动丢失。
+
+### 滚动统一调度（scroll.rs，2026-09 起为原生 ScrollPosition）
+
+- 通用滚动容器 = `ScrollableArea` 标记。`scroll_area_setup` 在实体生成后统一把
+  overflow 的 y 轴升为 `OverflowAxis::Scroll`（`ScrollPosition` 由 bevy 0.19 `Node`
+  的 `#[require]` 自动附带，**禁止**再用 `Without<ScrollPosition>` 过滤——永假），
+  **禁止**再写 `content Node.top = -offset`（位移参与下一帧 layout 的反馈环）。
+  clamp/裁剪交给 `ui_layout_system`（`bevy_ui/layout/mod.rs`，content_size 精确）。
+  内容自然高度经 taffy 进入容器 `ComputedNode.content_size()`，`max_logical =
+  (content_size - size).y * inverse_scale_factor`（ScrollPosition 是逻辑像素）。
+- `wheel_dispatch`（Update）是 UI 滚轮的**中央 dispatcher**：独占归一化
+  `MouseWheel`（Line → 逻辑像素 × 40；Pixel 物理像素 × `node.inverse_scale_factor`），
+  找光标下同窗口滚动容器的祖先链（内→外），`feed_scroll_layer` 逐层冒泡消费；
+  只有容器真的吃掉了位移才写 `UiWheelConsumed`。**terminal / browser 的滚轮消费
+  必须 `.after(wheel_dispatch)` 且先查 `UiWheelConsumed` 再决定是否读**，否则
+  Message 广播语义下同一帧双重响应。滚动条轨道是滚动容器子节点，靠
+  `IgnoreScroll(BVec2::new(false, true))` 钉住不被父滚动平移。
 
 Commented-out crates (not in workspace): `n3ri-render`, `n3ri-audio`, `n3ri-live2d`, `n3ri-apps`.
 Live2D FFI crates exist in `crates/` but are not workspace members.

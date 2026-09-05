@@ -8,3 +8,4 @@ backup/
 assets_dev/
 /user_settings.json
 /panic.txt
+.commandcode/

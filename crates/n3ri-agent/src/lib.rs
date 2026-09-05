@@ -17,9 +17,10 @@ pub use config::AgentConfig;
 pub use emotion::{extract_emotion, split_sentences};
 pub use memory::{
     append_episode, archive_sweep, build_memory_block, clear_memory_files, handle_recall_memory,
-    load_cursors, now_iso, recall, record_turn, render_hits, save_cursors, Cursors, Episode, Fact,
-    HotMemory, HotTurn, MemoryMaint, MemoryPlugin, MemoryStore, MemoryStoreRes, Persona,
-    PersonaEntry, ReflStatus, Reflection,
+    load_cursors, load_hot, now_iso, parse_self_intro, recall, record_turn, render_hits,
+    replay_episodes, save_cursors, save_hot, Cursors, Episode, Fact, HotMemory, HotTurn,
+    MemoryMaint, MemoryPlugin, MemoryStore, MemoryStoreRes, Persona, PersonaEntry, ReflStatus,
+    Reflection,
 };
 pub use prompt::{append_context, build_context_block, daypart};
 pub use scheduler::{

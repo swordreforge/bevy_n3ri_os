@@ -31,6 +31,10 @@ pub const ARCHIVE_FACT_DAYS: i64 = 7;
 pub const ARCHIVE_REFLECTION_DAYS: i64 = 30;
 pub const REFLECTION_ARCHIVE_SHARD_MAX: usize = 500;
 pub const EXTRACT_MAX_TURNS: usize = 12;
+pub const REPLAY_DAYS: i64 = 7;
+pub const REPLAY_MAX_TURNS: usize = 20;
+pub const REPLAY_MAX_CHARS: usize = 4000;
+pub const INTRO_FACT_IMPORTANCE: u8 = 9;
 
 pub fn agent_dir() -> std::path::PathBuf {
     dirs::config_dir()
@@ -258,7 +262,6 @@ pub fn now_iso() -> String {
 pub struct HotMemory {
     pub memo: String,
     pub tail: VecDeque<HotTurn>,
-    pub(crate) dirty: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -273,7 +276,6 @@ impl HotMemory {
         while self.tail.len() > HOT_CAP {
             self.tail.pop_front();
         }
-        self.dirty = true;
     }
 
     pub fn needs_summary(&self) -> bool {
@@ -368,6 +370,78 @@ pub fn save_cursors(c: &Cursors) {
     write_json("cursors.json", c);
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct HotPersist {
+    #[serde(default)]
+    memo: String,
+}
+
+pub fn save_hot(hot: &HotMemory) {
+    write_json(
+        "hot.json",
+        &HotPersist {
+            memo: hot.memo.clone(),
+        },
+    );
+}
+
+pub fn load_hot() -> String {
+    let p: HotPersist = read_json("hot.json");
+    p.memo
+}
+
+/// 启动回放：读最近 [`REPLAY_DAYS`] 天的 episodes，按 seq 排序取尾部
+/// [`REPLAY_MAX_TURNS`] 轮（总字符 [`REPLAY_MAX_CHARS`] 封顶）。
+/// 失败/缺文件视为空，不抛错。
+pub fn replay_episodes(days: i64, max_turns: usize, max_chars: usize) -> Vec<HotTurn> {
+    let dir = agent_dir();
+    let today = chrono::Local::now().date_naive();
+    let mut paths: Vec<std::path::PathBuf> = Vec::new();
+    for back in 0..=days.max(0) {
+        let d = today - chrono::Duration::days(back);
+        let p = dir.join(format!("episodes-{d}.jsonl"));
+        if p.is_file() {
+            paths.push(p);
+        }
+    }
+    let mut eps: Vec<Episode> = Vec::new();
+    for p in &paths {
+        let Ok(text) = std::fs::read_to_string(p) else {
+            continue;
+        };
+        for line in text.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            if let Ok(ep) = serde_json::from_str::<Episode>(line) {
+                eps.push(ep);
+            }
+        }
+    }
+    eps.sort_by_key(|e| e.seq);
+    let mut out: Vec<HotTurn> = eps
+        .into_iter()
+        .rev()
+        .take(max_turns.max(1))
+        .rev()
+        .map(|e| HotTurn {
+            user: e.user,
+            assistant: e.assistant,
+        })
+        .collect();
+    while out
+        .iter()
+        .map(|t| t.user.chars().count() + t.assistant.chars().count())
+        .sum::<usize>()
+        > max_chars
+        && !out.is_empty()
+    {
+        out.remove(0);
+    }
+    out
+}
+
 /// 一键清除本地记忆文件（保留 config.json / scheduler.json）。
 pub fn clear_memory_files() {
     let dir = agent_dir();
@@ -377,6 +451,7 @@ pub fn clear_memory_files() {
         "reflections.json",
         "persona.json",
         "cursors.json",
+        "hot.json",
     ] {
         let _ = std::fs::remove_file(dir.join(name));
     }
@@ -631,6 +706,25 @@ pub fn build_memory_block(store: &MemoryStore, hot: &HotMemory) -> String {
         lines.push(hot.memo.clone());
     }
 
+    let tail_start = hot.tail.len().saturating_sub(HOT_TAIL);
+    let mut used_t = 0usize;
+    let mut tlines: Vec<String> = Vec::new();
+    for t in hot.tail.iter().skip(tail_start) {
+        let u: String = t.user.chars().take(200).collect();
+        let a: String = t.assistant.chars().take(200).collect();
+        let line = format!("用户：{u} / Nori：{a}");
+        let len = line.chars().count();
+        if used_t + len > REPLAY_MAX_CHARS {
+            break;
+        }
+        used_t += len;
+        tlines.push(line);
+    }
+    if !tlines.is_empty() {
+        lines.push("【 recent 】".to_string());
+        lines.extend(tlines);
+    }
+
     if lines.is_empty() {
         return String::new();
     }
@@ -709,12 +803,7 @@ where
     maint.pending = true;
 }
 
-fn maint_poll(
-    maint: &mut MemoryMaint,
-    hot: &mut HotMemory,
-    store: &mut MemoryStore,
-    cfg: &AgentConfig,
-) {
+fn maint_poll(maint: &mut MemoryMaint, hot: &mut HotMemory, store: &mut MemoryStore) {
     if !maint.pending {
         return;
     }
@@ -734,6 +823,7 @@ fn maint_poll(
                         for _ in 0..out.dropped {
                             hot.tail.pop_front();
                         }
+                        save_hot(hot);
                     }
                 }
                 "extract" => {
@@ -769,7 +859,6 @@ fn maint_poll(
         }
         Err(std::sync::mpsc::TryRecvError::Empty) => {}
     }
-    let _ = cfg;
 }
 
 /// 每日归档 sweep（facts absorbed>7d；终态 reflections>30d 进分片）。
@@ -834,9 +923,93 @@ fn append_reflection_shard(items: &[Reflection]) {
 //  systems
 // ============================
 
+/// 从用户单句里即时抓“我是/我叫/我的名字是 X”（中英混排都行）。
+/// 返回 Some(名字) 时调用方应立刻写一条高 importance fact，不走 10 轮门限。
+/// 纯函数，方便单测。
+pub fn parse_self_intro(text: &str) -> Option<String> {
+    let t = text.trim();
+    if t.chars().count() > 60 {
+        return None;
+    }
+    // 中文“我X”误伤太多（我是新人/我是来…），只认带名字的“我叫/名字是”，
+    // “我是”只认后面紧跟 1..6 字纯 CJK/字母短名的。
+    let lower = t.to_lowercase();
+    for p in ["我的名字是", "我叫", "my name is"] {
+        if let Some(pos) = lower.find(p) {
+            let cut = pos + p.len();
+            return clean_name(t.get(cut.min(t.len())..).unwrap_or(""));
+        }
+    }
+    for p in ["i'm", "i am", "im "] {
+        if let Some(pos) = lower.find(p) {
+            let cut = pos + p.len();
+            return clean_name(t.get(cut.min(t.len())..).unwrap_or(""));
+        }
+    }
+    if let Some(rest) = t.strip_prefix("我是") {
+        // 先按标点/空格切出第一段（“我是阿宅,请记住我”→“阿宅”），再做短名校验。
+        // 段里混了汉字+动词（“今天刚来…”）就拒掉，只认纯短名。
+        let seg: String = rest
+            .split(['，', '。', '！', '？', ',', '.', '!', '?', ' ', '\n', '\t'])
+            .next()
+            .unwrap_or("")
+            .trim()
+            .chars()
+            .take(6)
+            .collect();
+        let bad_verb = ["刚", "来", "去", "在", "要", "想", "会", "是", "有", "新", "今", "明", "昨"];
+        if !seg.is_empty()
+            && seg.chars().count() <= 4
+            && seg
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || is_cjk(c))
+            && !seg.chars().any(|c| bad_verb.contains(&c.to_string().as_str()))
+        {
+            return clean_name(&seg);
+        }
+        return None;
+    }
+    None
+}
+
+fn clean_name(raw: &str) -> Option<String> {
+    let name: String = raw
+        .trim()
+        .trim_matches(|c: char| {
+            c.is_whitespace() || matches!(c, '，' | '。' | '！' | '？' | ',' | '.' | '!' | '?' | '、' | '；' | ';' | '：' | ':')
+        })
+        .chars()
+        .take(24)
+        .collect();
+    let name: String = name
+        .split(['，', '。', '！', '？', ',', '.', '!', '?', ' ', '\n', '\t'])
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if name.chars().count() >= 1 && name.chars().count() <= 24 {
+        Some(name)
+    } else {
+        None
+    }
+}
+
+fn make_intro_fact(name: &str) -> Fact {
+    let text = format!("用户的名字是{name}");
+    Fact {
+        id: fact_id(),
+        hash: normalize_hash(&text),
+        text,
+        importance: INTRO_FACT_IMPORTANCE,
+        kind: "preference".to_string(),
+        created_at: now_iso(),
+        absorbed: false,
+    }
+}
+
 pub fn record_turn(
     hot: &mut HotMemory,
-    store: &MemoryStore,
+    store: &mut MemoryStore,
     user: &str,
     assistant: &str,
     cfg: &AgentConfig,
@@ -860,7 +1033,17 @@ pub fn record_turn(
         user: user.to_string(),
         assistant: assistant.to_string(),
     });
-    let _ = store;
+    if let Some(name) = parse_self_intro(user) {
+        let probe = format!("用户的名字是{name}");
+        let known = store.facts.iter().any(|f| {
+            normalize_hash(&f.text) == normalize_hash(&probe)
+                || f.text.contains(&name) && f.text.contains("名字")
+        });
+        if !known {
+            store.insert_facts(vec![make_intro_fact(&name)]);
+            store.save_facts();
+        }
+    }
 }
 
 fn maybe_summarize(hot: &HotMemory, maint: &mut MemoryMaint, cfg: &AgentConfig) {
@@ -1057,13 +1240,28 @@ fn memory_maintenance_tick(
     mut maint: ResMut<MemoryMaint>,
     mut store_res: ResMut<MemoryStoreRes>,
     mut sweep_acc: Local<f32>,
+    mut hot_save_acc: Local<f32>,
     time: Res<Time>,
 ) {
     if !store_res.loaded {
         store_res.store = MemoryStore::load();
+        // 冷启动：memo 先落盘恢复（hot.json），tail 用 episodes 回放补一个滑动窗口。
+        hot.memo = load_hot();
+        hot.tail = replay_episodes(REPLAY_DAYS, HOT_TAIL, REPLAY_MAX_CHARS)
+            .into_iter()
+            .collect();
         store_res.loaded = true;
     }
-    maint_poll(&mut maint, &mut hot, &mut store_res.store, &cfg);
+    // poll 先收线程结果（summarize 的 memo 靠这里写回 hot），再按顺序触发新任务。
+    maint_poll(&mut maint, &mut hot, &mut store_res.store);
+    // memo 非空就节流落盘（只管 summarize 写回的 memo；tail 靠 episodes 落盘）。
+    *hot_save_acc += time.delta_secs();
+    if *hot_save_acc >= 30.0 {
+        *hot_save_acc = 0.0;
+        if cfg.memory_enabled && !hot.memo.is_empty() {
+            save_hot(&hot);
+        }
+    }
     if !cfg.memory_enabled {
         return;
     }
@@ -1185,7 +1383,6 @@ mod tests {
         let hot = HotMemory {
             memo: "用户喜欢下棋".into(),
             tail: VecDeque::new(),
-            dirty: false,
         };
         let b = build_memory_block(&store, &hot);
         assert!(b.starts_with("<memory>"));
@@ -1208,6 +1405,51 @@ mod tests {
     fn hash_normalizes() {
         assert_eq!(normalize_hash("用户喜欢，下棋。"), normalize_hash("用户喜欢下棋"));
         assert_ne!(normalize_hash("喜欢下棋"), normalize_hash("喜欢游泳"));
+    }
+
+    #[test]
+    fn self_intro_zh_and_en() {
+        assert_eq!(parse_self_intro("我叫阿宅"), Some("阿宅".to_string()));
+        assert_eq!(parse_self_intro("我的名字是niri。"), Some("niri".to_string()));
+        assert_eq!(parse_self_intro("我是阿宅,请记住我"), Some("阿宅".to_string()));
+        assert_eq!(parse_self_intro("hi, my name is niri"), Some("niri".to_string()));
+        assert_eq!(parse_self_intro("今天天气不错"), None);
+        assert_eq!(
+            parse_self_intro("我是今天刚来这个城市工作的新人,还在熟悉环境"),
+            None
+        );
+    }
+
+    #[test]
+    fn self_intro_fact_recalls() {
+        let mut store = MemoryStore::default();
+        let mut hot = HotMemory::default();
+        let cfg = AgentConfig {
+            memory_enabled: true,
+            ..AgentConfig::default()
+        };
+        let dir = agent_dir();
+        let _ = std::fs::create_dir_all(&dir);
+        let _ = std::fs::remove_file(dir.join("facts.json"));
+        record_turn(&mut hot, &mut store, "我叫阿宅", "你好阿宅", &cfg);
+        assert!(store.facts.iter().any(|f| f.text.contains("阿宅")));
+        let before = store.facts.len();
+        record_turn(&mut hot, &mut store, "我叫阿宅", "又见面了", &cfg);
+        assert_eq!(store.facts.len(), before);
+        let hits = recall(&store, "我叫什么名字");
+        assert!(!hits.is_empty());
+        let _ = std::fs::remove_file(dir.join("facts.json"));
+        let _ = std::fs::remove_file(dir.join("cursors.json"));
+    }
+
+    #[test]
+    fn memory_block_includes_recent_tail() {
+        let store = MemoryStore::default();
+        let mut hot = HotMemory::default();
+        hot.push("我叫阿宅".to_string(), "你好阿宅".to_string());
+        let b = build_memory_block(&store, &hot);
+        assert!(b.contains("【 recent 】"));
+        assert!(b.contains("阿宅"));
     }
 }
 

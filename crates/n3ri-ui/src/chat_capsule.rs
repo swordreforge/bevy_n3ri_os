@@ -869,7 +869,7 @@ fn chat_llm_poll(
     mut emotion_events: MessageWriter<ChatEmotionEvent>,
     mut passive: ResMut<n3ri_agent::PassivePending>,
     mut hot: ResMut<n3ri_agent::HotMemory>,
-    store: Res<n3ri_agent::MemoryStoreRes>,
+    mut store: ResMut<n3ri_agent::MemoryStoreRes>,
     agent_cfg: Res<n3ri_agent::AgentConfig>,
 ) {
         let g = &mut *bubbles;
@@ -889,7 +889,7 @@ fn chat_llm_poll(
                 emotion_events.write(ChatEmotionEvent(e));
             }
             history.messages.push(Message::assistant(cleaned.clone()));
-            n3ri_agent::record_turn(&mut hot, &store.store, &user_text, &cleaned, &agent_cfg);
+            n3ri_agent::record_turn(&mut hot, &mut store.store, &user_text, &cleaned, &agent_cfg);
             let sentences = split_sentences(&cleaned);
             if sentences.is_empty() {
                 g.queue.push_back("……".to_string());

@@ -141,8 +141,13 @@ fn run_windowed() {
             update_loading_screen.run_if(in_state(OsState::Loading)),
         )
         .add_systems(OnEnter(OsState::Desktop), spawn_desktop_screen)
+        .add_systems(OnEnter(OsState::Desktop), mark_agent_session)
         .add_systems(Update, (toggle_head_display,))
         .run();
+}
+
+fn mark_agent_session(time: Res<Time>, mut sched: ResMut<n3ri_agent::SchedulerState>) {
+    n3ri_agent::mark_session_start(&mut sched, time.elapsed_secs_f64());
 }
 
 fn run_wallpaper() {
@@ -225,6 +230,7 @@ fn run_wallpaper() {
             update_loading_screen.run_if(in_state(OsState::Loading)),
         )
         .add_systems(OnEnter(OsState::Desktop), spawn_desktop_screen)
+        .add_systems(OnEnter(OsState::Desktop), mark_agent_session)
         .add_systems(Update, (toggle_head_display,))
         .run();
 }

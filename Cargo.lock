@@ -6500,6 +6500,7 @@ version = "0.1.0"
 dependencies = [
  "bevy",
  "chrono",
+ "dirs",
  "n3ri-core",
  "n3ri-llm",
  "serde",

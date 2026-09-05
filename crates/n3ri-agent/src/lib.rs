@@ -5,6 +5,7 @@
 //! M1 context/world+prompt，M2 scheduler+turn，M3 memory，M4 tools。
 
 pub mod config;
+pub mod emotion;
 pub mod memory;
 pub mod prompt;
 pub mod scheduler;
@@ -13,8 +14,13 @@ pub mod turn;
 pub mod world;
 
 pub use config::AgentConfig;
+pub use emotion::{extract_emotion, split_sentences};
 pub use prompt::{append_context, build_context_block, daypart};
-pub use scheduler::{HookKind, SchedulerState};
+pub use scheduler::{
+    load_scheduler, mark_session_start, save_scheduler, scheduler_tick, GateResult, HookKind,
+    SchedulerState,
+};
+pub use turn::{AgentOutbox, AgentTurn, PassivePending, ProactiveFire, TurnPlugin};
 pub use world::{
     classify_activity, classify_presence, context_tick, is_transitioning, AgentWorldView,
     ContextSnapshot, OutsideView, OutsideWindow, WallpaperMode, WindowInfo,
@@ -22,16 +28,19 @@ pub use world::{
 
 use bevy::prelude::*;
 
-/// M1：ContextSnapshot 聚合 tick 接入；scheduler/turn/memory/tools 在后续里程碑接入。
+/// M2：scheduler tick + turn 执行接入；memory/tools 在后续里程碑接入。
 pub struct AgentPlugin;
 
 impl Plugin for AgentPlugin {
     fn build(&self, app: &mut App) {
+        let sched = load_scheduler();
         app.init_resource::<AgentConfig>()
             .init_resource::<WallpaperMode>()
             .init_resource::<AgentWorldView>()
             .init_resource::<ContextSnapshot>()
-            .init_resource::<SchedulerState>()
-            .add_systems(Update, context_tick);
+            .insert_resource(sched)
+            .add_systems(Update, context_tick)
+            .add_plugins(TurnPlugin)
+            .add_systems(Update, scheduler_tick.after(context_tick));
     }
 }

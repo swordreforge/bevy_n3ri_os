@@ -20,6 +20,7 @@ impl Plugin for ChatCapsulePlugin {
             .init_resource::<ChatRise>()
             .init_resource::<ChatLlmState>()
             .init_resource::<ChatHistory>()
+            .init_resource::<AgentBubbleInbox>()
             .init_resource::<ChatBubbleState>()
             .add_systems(
                 Update,
@@ -34,6 +35,8 @@ impl Plugin for ChatCapsulePlugin {
             .add_systems(Update, chat_capsule_cursor_blink)
             .add_systems(Update, chat_llm_dispatch.after(chat_capsule_input))
             .add_systems(Update, chat_llm_poll)
+            .add_systems(Update, agent_outbox_bridge.after(chat_llm_poll))
+            .add_systems(Update, agent_inbox_drain.after(agent_outbox_bridge))
             .add_systems(Update, chat_sentence_reveal)
             .add_systems(Update, chat_bubble_sync);
         app.add_message::<ChatEmotionEvent>();
@@ -72,8 +75,8 @@ impl Default for ChatCapsuleState {
 pub struct ChatRise(pub f32);
 
 #[derive(Resource)]
-struct ChatLlmState {
-    pending: bool,
+pub(crate) struct ChatLlmState {
+    pub pending: bool,
     rx: Option<Mutex<Receiver<Result<String, String>>>>,
     system_prompt: Option<String>,
 }
@@ -86,8 +89,14 @@ impl Default for ChatLlmState {
 
 /// LLM 对话上下文(系统提示词单独存放,不占历史条目)
 #[derive(Resource, Default)]
-struct ChatHistory {
+pub(crate) struct ChatHistory {
     messages: Vec<Message>,
+}
+
+/// Agent 主动轮投递口：M2 起 `n3ri-agent` 的 `proactive_poll` 经此队列进气泡。
+#[derive(Resource, Default)]
+pub struct AgentBubbleInbox {
+    pub items: VecDeque<String>,
 }
 
 #[derive(Resource, Default)]
@@ -690,6 +699,38 @@ const EMOTION_TAGS: &[(&str, &str)] = &[
 
 const EMOTION_PROMPT: &str = "\n\n【输出格式附加要求】每次回复的最末尾,附加且仅附加一个情绪标签,只能从以下选择:[开心] [难过] [生气] [惊讶] [困惑] [得意] [害羞] [疲惫] [平静]。标签只出现一次,放在整条回复的最后。";
 
+/// Agent 主动轮投递：outbox → inbox（chat 侧）+ emotion 转发。
+/// outbox 由 `n3ri-agent` 的 `proactive_poll` 写入，本桥只搬运，不做决策。
+fn agent_outbox_bridge(
+    mut outbox: ResMut<n3ri_agent::AgentOutbox>,
+    mut inbox: ResMut<AgentBubbleInbox>,
+    mut emotion_events: MessageWriter<ChatEmotionEvent>,
+) {
+    if !outbox.dirty() {
+        return;
+    }
+    let (sentences, emotion) = outbox.take_out();
+    for s in sentences {
+        inbox.items.push_back(s);
+    }
+    if let Some(e) = emotion {
+        emotion_events.write(ChatEmotionEvent(e));
+    }
+}
+
+/// Agent 主动轮投递：inbox → 气泡句子队列（复用逐句揭示/3 条上限/寿命逻辑）。
+fn agent_inbox_drain(
+    mut inbox: ResMut<AgentBubbleInbox>,
+    mut bubbles: ResMut<ChatBubbleState>,
+) {
+    if inbox.items.is_empty() {
+        return;
+    }
+    for s in inbox.items.drain(..) {
+        bubbles.queue.push_back(s);
+    }
+}
+
 fn extract_emotion(text: &str) -> (String, Option<String>) {
     let mut result = text.to_string();
     let mut emotion: Option<String> = None;
@@ -746,6 +787,8 @@ fn chat_llm_dispatch(
     mut bubbles: ResMut<ChatBubbleState>,
     view: Res<n3ri_agent::AgentWorldView>,
     snap: Res<n3ri_agent::ContextSnapshot>,
+    mut sched: ResMut<n3ri_agent::SchedulerState>,
+    mut passive: ResMut<n3ri_agent::PassivePending>,
 ) {
         let g = &mut *bubbles;
     let Some(input) = state.submitted.take() else {
@@ -753,7 +796,9 @@ fn chat_llm_dispatch(
     };
     if llm.pending {
         return;
-    }
+    };
+    n3ri_agent::turn::note_user_reply_now(&mut sched, time.elapsed_secs_f64());
+    passive.0 = true;
     if llm.system_prompt.is_none() {
         llm.system_prompt = load_system_prompt();
     }
@@ -805,6 +850,7 @@ fn chat_llm_poll(
     mut history: ResMut<ChatHistory>,
     mut bubbles: ResMut<ChatBubbleState>,
     mut emotion_events: MessageWriter<ChatEmotionEvent>,
+    mut passive: ResMut<n3ri_agent::PassivePending>,
 ) {
         let g = &mut *bubbles;
     if !llm.pending {
@@ -812,6 +858,7 @@ fn chat_llm_poll(
     }
     let Some(rx) = llm.rx.as_ref() else {
         llm.pending = false;
+        passive.0 = false;
         return;
     };
     let recv = rx.lock().unwrap().try_recv();
@@ -832,6 +879,7 @@ fn chat_llm_poll(
             }
             llm.pending = false;
             llm.rx = None;
+            passive.0 = false;
         }
         Ok(Err(e)) => {
             if g.shown.back().map(|l| l.text == THINKING_TEXT).unwrap_or(false) {
@@ -840,10 +888,12 @@ fn chat_llm_poll(
             g.queue.push_back(format!("呜……信号断断续续的,Nori 连不上。({e})"));
             llm.pending = false;
             llm.rx = None;
+            passive.0 = false;
         }
         Err(std::sync::mpsc::TryRecvError::Disconnected) => {
             llm.pending = false;
             llm.rx = None;
+            passive.0 = false;
         }
         Err(std::sync::mpsc::TryRecvError::Empty) => {}
     }

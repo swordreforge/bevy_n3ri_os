@@ -6564,6 +6564,7 @@ dependencies = [
  "chrono",
  "euclid",
  "icu_provider 2.3.1",
+ "n3ri-agent",
  "n3ri-core",
  "n3ri-llm",
  "pollster",

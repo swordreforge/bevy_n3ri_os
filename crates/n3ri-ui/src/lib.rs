@@ -1,6 +1,7 @@
 use bevy::prelude::*;
 use bevy_woff::WoffPlugin;
 
+pub mod agent_bridge;
 pub mod apps;
 pub mod chat_capsule;
 pub mod content;
@@ -36,6 +37,7 @@ impl Plugin for N3riUiPlugin {
             desktop::DesktopFxPlugin,
             dock::DockPlugin,
             window::WindowPlugin,
+            agent_bridge::AgentBridgePlugin,
             snap::SnapPlugin,
             resize::ResizePlugin,
             scroll::ScrollPlugin,
@@ -45,9 +47,9 @@ impl Plugin for N3riUiPlugin {
             apps::settings::SettingsPlugin,
             apps::terminal::TerminalPlugin,
             apps::files::FilesPlugin,
-            apps::txt_reader::TxtReaderPlugin,
-            apps::log_viewer::LogViewerPlugin,
         ));
+        app.add_plugins(apps::txt_reader::TxtReaderPlugin);
+        app.add_plugins(apps::log_viewer::LogViewerPlugin);
         app.add_plugins((
             apps::image_viewer::ImageViewerPlugin,
             apps::international_chess::InternationalChessPlugin,

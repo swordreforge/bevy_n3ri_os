@@ -744,6 +744,8 @@ fn chat_llm_dispatch(
     mut llm: ResMut<ChatLlmState>,
     mut history: ResMut<ChatHistory>,
     mut bubbles: ResMut<ChatBubbleState>,
+    view: Res<n3ri_agent::AgentWorldView>,
+    snap: Res<n3ri_agent::ContextSnapshot>,
 ) {
         let g = &mut *bubbles;
     let Some(input) = state.submitted.take() else {
@@ -769,7 +771,11 @@ fn chat_llm_dispatch(
     }
 
     let mut req = Vec::with_capacity(history.messages.len() + 1);
-    req.push(Message::system(system_prompt));
+    req.push(Message::system(n3ri_agent::append_context(
+        &system_prompt,
+        &view,
+        &snap,
+    )));
     req.extend(history.messages.iter().cloned());
 
     let (tx, rx) = channel();

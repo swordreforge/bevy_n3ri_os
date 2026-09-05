@@ -93,6 +93,7 @@ fn print_help() {
 
 fn run_windowed() {
     let mut app = App::new();
+    app.insert_resource(n3ri_agent::WallpaperMode(false));
 
     // ReplaceDefault 必须先于 AssetPlugin 注册（之后添加会 panic），资源路径调用点零改动
     #[cfg(feature = "embed-assets")]
@@ -146,6 +147,7 @@ fn run_windowed() {
 
 fn run_wallpaper() {
     let mut app = App::new();
+    app.insert_resource(n3ri_agent::WallpaperMode(true));
 
     #[cfg(feature = "embed-assets")]
     app.add_plugins(bevy_embedded_assets::EmbeddedAssetPlugin {

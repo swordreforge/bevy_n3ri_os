@@ -13,19 +13,25 @@ pub mod turn;
 pub mod world;
 
 pub use config::AgentConfig;
+pub use prompt::{append_context, build_context_block, daypart};
 pub use scheduler::{HookKind, SchedulerState};
-pub use world::{AgentWorldView, ContextSnapshot};
+pub use world::{
+    classify_activity, classify_presence, context_tick, is_transitioning, AgentWorldView,
+    ContextSnapshot, OutsideView, OutsideWindow, WallpaperMode, WindowInfo,
+};
 
 use bevy::prelude::*;
 
-/// M0 空壳插件：资源初始化占位，system 在后续里程碑接入。
+/// M1：ContextSnapshot 聚合 tick 接入；scheduler/turn/memory/tools 在后续里程碑接入。
 pub struct AgentPlugin;
 
 impl Plugin for AgentPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<AgentConfig>()
+            .init_resource::<WallpaperMode>()
             .init_resource::<AgentWorldView>()
             .init_resource::<ContextSnapshot>()
-            .init_resource::<SchedulerState>();
+            .init_resource::<SchedulerState>()
+            .add_systems(Update, context_tick);
     }
 }

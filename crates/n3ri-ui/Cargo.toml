@@ -17,6 +17,7 @@ bevy = { workspace = true, features = [
 ] }
 n3ri-core = { path = "../n3ri-core" }
 n3ri-llm = { path = "../n3ri-llm" }
+n3ri-agent = { path = "../n3ri-agent" }
 portable-pty = "0.8"
 bevy_woff = "0.2"
 # 壁纸桥接：读取 layer-shell 指针状态/表面信息（vendored，本地补丁增加 axis 滚动捕获）

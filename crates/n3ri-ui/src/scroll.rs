@@ -252,7 +252,7 @@ pub(crate) fn wheel_dispatch(
                 continue;
             };
             let before = pos.y;
-            delta_px = feed_scroll_layer(&node, &mut pos, delta_px);
+            delta_px = feed_scroll_layer(node, &mut pos, delta_px);
             if (before - pos.y).abs() > CONSUME_EPSILON {
                 handled = true;
             }

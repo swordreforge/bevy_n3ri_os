@@ -480,7 +480,7 @@ fn buy_source(game: &mut ClickerGame, idx: usize) {
                         continue;
                     }
                     let ratio = SOURCE_DEFS[i].1 * game.multiplier() / cost;
-                    if best.map_or(true, |(_, r)| ratio > r) {
+                    if best.is_none_or(|(_, r)| ratio > r) {
                         best = Some((i, ratio));
                     }
                 }
@@ -814,7 +814,7 @@ pub fn spawn_clicker(parent: &mut ChildSpawnerCommands, asset_server: &AssetServ
                         // 算力源列表（可滚动）
                         let list_e = right
                             .spawn((
-                                ScrollableArea::default(),
+                                ScrollableArea,
                                 Node {
                                     flex_grow: 1.0,
                                     width: Val::Percent(100.0),

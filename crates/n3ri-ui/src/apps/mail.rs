@@ -302,7 +302,7 @@ pub fn spawn_mail(parent: &mut ChildSpawnerCommands, fonts: &N3riFonts) {
 
                         let area_e = sidebar
                             .spawn((
-                                ScrollableArea::default(),
+                                ScrollableArea,
                                 Node {
                                     width: Val::Percent(100.0),
                                     flex_grow: 1.0,
@@ -350,7 +350,7 @@ pub fn spawn_mail(parent: &mut ChildSpawnerCommands, fonts: &N3riFonts) {
                     row.commands().entity(view_e).with_children(|v| {
                         let area_e = v
                             .spawn((
-                                ScrollableArea::default(),
+                                ScrollableArea,
                                 Node {
                                     width: Val::Percent(100.0),
                                     height: Val::Percent(100.0),

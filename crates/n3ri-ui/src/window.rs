@@ -306,11 +306,10 @@ fn window_focus_system(
                     continue;
                 };
                 let half = node.size() * 0.5;
-                if local.x.abs() <= half.x && local.y.abs() <= half.y {
-                    if best.map_or(true, |(_, bz)| app.z > bz) {
+                if local.x.abs() <= half.x && local.y.abs() <= half.y
+                    && best.is_none_or(|(_, bz)| app.z > bz) {
                         best = Some((e, app.z));
                     }
-                }
             }
             target = best.map(|(e, _)| e);
         }
@@ -369,7 +368,7 @@ fn window_focus_validate(
         if *vis == Visibility::Hidden {
             continue;
         }
-        if best.map_or(true, |(_, bz)| a.z > bz) {
+        if best.is_none_or(|(_, bz)| a.z > bz) {
             best = Some((e, a.z));
         }
     }

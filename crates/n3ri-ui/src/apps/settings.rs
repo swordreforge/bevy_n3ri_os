@@ -312,7 +312,7 @@ pub fn spawn_settings_window(parent: &mut ChildSpawnerCommands, fonts: &N3riFont
 
                     let area_e = body
                         .spawn((
-                            ScrollableArea::default(),
+                            ScrollableArea,
                             Node {
                                 flex_grow: 1.0,
                                 align_items: AlignItems::FlexStart,
@@ -827,7 +827,7 @@ fn spawn_music_builtin_row(
 fn spawn_track_list_container(parent: &mut ChildSpawnerCommands, ents: &mut SettingsEntities) {
     let area_e = parent
         .spawn((
-            ScrollableArea::default(),
+            ScrollableArea,
             Node {
                 width: Val::Percent(100.0),
                 height: Val::Px(TRACK_LIST_VIEWPORT_H),

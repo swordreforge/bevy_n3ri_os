@@ -21,7 +21,7 @@ pub fn spawn_txt_reader(parent: &mut ChildSpawnerCommands, file_path: &str, font
 
     parent.commands().entity(window_entity).with_children(|window| {
         let area_e = window.spawn((
-            ScrollableArea::default(),
+            ScrollableArea,
             Node {
                 width: Val::Percent(100.0),
                 flex_grow: 1.0,
@@ -143,7 +143,7 @@ pub fn spawn_txt_reader_direct(commands: &mut Commands, file_path: &str, fonts: 
         });
 
         let area_e = window.spawn((
-            ScrollableArea::default(),
+            ScrollableArea,
             Node {
                 width: Val::Percent(100.0),
                 flex_grow: 1.0,

@@ -218,7 +218,7 @@ fn spawn_toolbar(parent: &mut ChildSpawnerCommands, fonts: &N3riFonts) {
 fn spawn_content(parent: &mut ChildSpawnerCommands, fonts: &N3riFonts) {
     let area_e = parent
         .spawn((
-            ScrollableArea::default(),
+            ScrollableArea,
             Node {
                 width: Val::Percent(100.0),
                 flex_grow: 1.0,
@@ -422,7 +422,7 @@ fn files_item_click(
                 let tip = std::env::temp_dir().join("n3ri_pdf_preview_missing.txt");
                 fs::write(&tip, "无法预览:此文档已损坏,或缺少预览数据。\n\n……这一份似乎和其余的报告不太一样。建议不要继续查阅。").ok();
                 if let Some(tip_str) = tip.to_str() {
-                    crate::apps::txt_reader::spawn_txt_reader_direct(&mut commands, &tip_str.to_string(), &fonts_data);
+                    crate::apps::txt_reader::spawn_txt_reader_direct(&mut commands, tip_str, &fonts_data);
                 }
             }
         } else if !item.name.contains('.') {

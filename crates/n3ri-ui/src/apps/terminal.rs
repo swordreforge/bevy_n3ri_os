@@ -384,11 +384,10 @@ impl TerminalState {
             },
             'D' => self.echo_col = self.echo_col.saturating_sub(n.max(1)),
             'C' => self.echo_col += n.max(1),
-            'G' => {
-                if n > 0 {
+            'G'
+                if n > 0 => {
                     self.echo_col = n - 1;
                 }
-            }
             _ => {}
         }
     }
@@ -630,7 +629,7 @@ fn terminal_input(
                 let cmd = state.input_buf.trim().to_string();
                 state.input_buf.clear();
                 if cmd == "clear" || cmd == "cls" {
-                    clear_terminal_screen(&mut *state);
+                    clear_terminal_screen(&mut state);
                 }
                 state.send("\r");
             }
@@ -974,7 +973,7 @@ fn terminal_render_lines(
             **text = root.to_string();
         }
 
-        if let Some(&sel_e) = children.get(0) {
+        if let Some(&sel_e) = children.first() {
             if let Ok((mut span, maybe_bg, maybe_fg)) = span_query.get_mut(sel_e) {
                 if **span != selected {
                     **span = selected;

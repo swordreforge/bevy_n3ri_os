@@ -75,17 +75,13 @@ impl Default for ChatCapsuleState {
 pub struct ChatRise(pub f32);
 
 #[derive(Resource)]
+#[derive(Default)]
 pub(crate) struct ChatLlmState {
     pub pending: bool,
     rx: Option<Mutex<Receiver<(Result<String, String>, String, Vec<n3ri_agent::PendingEffect>)>>>,
     system_prompt: Option<String>,
 }
 
-impl Default for ChatLlmState {
-    fn default() -> Self {
-        Self { pending: false, rx: None, system_prompt: None }
-    }
-}
 
 /// LLM 对话上下文(系统提示词单独存放,不占历史条目)
 #[derive(Resource, Default)]
@@ -625,7 +621,7 @@ fn chat_capsule_ime(
                     .nth(state.cursor_pos)
                     .map(|(i, _)| i)
                     .unwrap_or(state.input_text.len());
-                state.input_text.insert_str(byte_pos, &value);
+                state.input_text.insert_str(byte_pos, value);
                 state.cursor_pos += value.chars().count();
             }
             Ime::Enabled { .. } => {

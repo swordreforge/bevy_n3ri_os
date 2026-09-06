@@ -104,7 +104,7 @@ pub fn spawn_credits_window(
 
             let area_e = window
                 .spawn((
-                    ScrollableArea::default(),
+                    ScrollableArea,
                     Node {
                         width: Val::Percent(100.0),
                         flex_grow: 1.0,

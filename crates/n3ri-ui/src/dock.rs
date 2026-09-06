@@ -423,7 +423,7 @@ fn dock_update(
                             });
                         }
                         "browser" => {
-                            crate::apps::browser::request_browser(&mut *browser_launch);
+                            crate::apps::browser::request_browser(&mut browser_launch);
                         }
                         _ => {}
                     }

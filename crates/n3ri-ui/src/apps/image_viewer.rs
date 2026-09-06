@@ -133,7 +133,7 @@ pub fn spawn_image_viewer_direct(commands: &mut Commands, file_path: &str, fonts
         });
 
         let area_e = window.spawn((
-            ScrollableArea::default(),
+            ScrollableArea,
             Node {
                 width: Val::Percent(100.0),
                 flex_grow: 1.0,

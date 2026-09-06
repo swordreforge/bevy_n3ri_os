@@ -14,7 +14,9 @@ const CHAT_BOTTOM: f32 = 14.0;
 const CHAT_RIGHT: f32 = 24.0;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Default)]
 pub enum TextInputFocus {
+    #[default]
     None,
     Chat,
     Terminal,
@@ -27,11 +29,6 @@ pub enum TextInputFocus {
 #[derive(Resource, Default, Debug)]
 pub struct TextInputOwner(pub TextInputFocus);
 
-impl Default for TextInputFocus {
-    fn default() -> Self {
-        Self::None
-    }
-}
 
 impl TextInputOwner {
     pub fn is(&self, focus: TextInputFocus) -> bool {

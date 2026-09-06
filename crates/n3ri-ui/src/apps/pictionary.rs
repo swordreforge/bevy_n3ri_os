@@ -465,7 +465,7 @@ fn start_new_round(game: &mut PictionaryGame, db: &DrawingsState) {
     game.is_drawing = false;
     game.last_pos = None;
     game.clear_canvas = true;
-    if game.total_rounds % 2 == 0 {
+    if game.total_rounds.is_multiple_of(2) {
         game.phase = PicPhase::PlayerDraws;
         game.nori_timer = NORI_FIRST;
         let msg = format!("🎯 画「{}」", game.word_zh);
@@ -971,7 +971,7 @@ fn spawn_game_page(parent: &mut ChildSpawnerCommands, fonts: &N3riFonts) {
                     // 消息滚动区（参照 signal: ScrollableArea + flex_grow:1）
                     let area_e = panel
                         .spawn((
-                            ScrollableArea::default(),
+                            ScrollableArea,
                             Node {
                                 width: Val::Percent(100.0),
                                 flex_grow: 1.0,
@@ -1115,7 +1115,7 @@ fn spawn_result_page(parent: &mut ChildSpawnerCommands, fonts: &N3riFonts) {
             });
             let area_e = page
                 .spawn((
-                    ScrollableArea::default(),
+                    ScrollableArea,
                     Node {
                         width: Val::Px(480.0),
                         height: Val::Px(200.0),
@@ -1219,7 +1219,7 @@ fn pic_init_canvas(
 
 /// 整张刷成纸色
 fn fill_paper(data: &mut [u8]) {
-    for px in data.chunks_exact_mut(4) {
+    for px in data.as_chunks_mut::<4>().0 {
         px.copy_from_slice(&PAPER);
     }
 }

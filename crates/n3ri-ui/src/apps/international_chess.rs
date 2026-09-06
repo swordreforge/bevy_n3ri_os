@@ -480,7 +480,7 @@ impl Position {
     fn has_any_legal(&self) -> bool {
         for r in 0..8 {
             for c in 0..8 {
-                let sq = Sq::new(r as i32, c as i32);
+                let sq = Sq::new(r, c);
                 if let Some(p) = self.piece_at(sq) {
                     if p.color == self.turn && !self.legal_moves(sq).is_empty() {
                         return true;
@@ -2041,7 +2041,7 @@ pub fn spawn_international_chess(
                                     mp.spawn(label_text(&font, "走法", 10.0, TEXT_GRAY));
                                     let list_e = mp
                                         .spawn((
-                                            ScrollableArea::default(),
+                                            ScrollableArea,
                                             Node {
                                                 flex_grow: 1.0,
                                                 width: Val::Percent(100.0),

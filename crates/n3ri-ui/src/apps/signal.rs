@@ -335,7 +335,7 @@ pub fn spawn_signal(parent: &mut ChildSpawnerCommands, fonts: &N3riFonts) {
 
                             let area_e = sidebar
                                 .spawn((
-                                    ScrollableArea::default(),
+                                    ScrollableArea,
                                     Node {
                                         width: Val::Percent(100.0),
                                         flex_grow: 1.0,
@@ -450,7 +450,7 @@ pub fn spawn_signal(parent: &mut ChildSpawnerCommands, fonts: &N3riFonts) {
 
                         let chat_e = v
                             .spawn((
-                                ScrollableArea::default(),
+                                ScrollableArea,
                                 Node {
                                     width: Val::Percent(100.0),
                                     flex_grow: 1.0,

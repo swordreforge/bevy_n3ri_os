@@ -543,8 +543,8 @@ impl CakeduelGame {
         }
         self.attack_play = None;
         self.defense_play = None;
-        self.discard.extend(self.hand_human.drain(..));
-        self.discard.extend(self.hand_ai.drain(..));
+        self.discard.append(&mut self.hand_human);
+        self.discard.append(&mut self.hand_ai);
         self.attacker = self.attacker.other();
         self.ai_role = match self.attacker {
             Side::Human => AiRole::Defend,
@@ -1305,14 +1305,13 @@ fn st_ck_game(
                     game.settle_block();
                 }
             }
-            4 => {
+            4
                 // 取消回击选牌
-                if game.defense_selecting {
+                if game.defense_selecting => {
                     game.defense_selecting = false;
                     game.sel.clear();
                     game.dirty = true;
                 }
-            }
             _ => {}
         }
     }

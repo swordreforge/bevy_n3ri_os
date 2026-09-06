@@ -1,0 +1,90 @@
+1. Browser — the single biggest frame-time consumer
+File: apps/browser.rs
+Problem A — paint/readback is not damage-driven (browser_drive, lines 1031–1118). While the window exists and is not minimized, every frame:
+1. engine.servo.spin_event_loop();
+2. webview.paint();  ← forces Servo to composite
+3. read_full_frame() + image.into_raw() ← allocates a fresh full-frame Vec<u8> (~1100×664×4 ≈ 2.9 MB) per frame
+4. extract_browser_frame (line 1247) does frame.0.clone() → a second full 2.9 MB allocation + memcpy per frame (clone happens even when the frame is byte-identical from last frame)
+5. Render world inject_browser_frame uploads the whole texture via write_texture every frame.
+There is no change detection, no focus gating, no occlusion gating. It repaints full-rate even when: the page is static, the browser window is behind another window, or the cursor is idle. Minimize pauses it only because of the AppVisible check at line 1045; being covered by another window does not.
+Problem B — no buffer reuse. FrameDesc { pixels: Vec<u8> } is reallocated each frame; FrameDesc is Cloned in Extract. Never reuse a staging buffer, never mem::take, never Arc<Vec<u8>>.
+Problem C — write_texture row pitch. Line 1284: bytes_per_row: Some(4 * desc.width). wgpu/WebGPU validation requires bytes_per_row be a multiple of 256 for a texture copy from a tight buffer — if 4×width is not 256-aligned wgpu either internally realigns (extra copy) or panics depending on path. Worth verifying; if it errors today it is silently routed through a slow path.
+Fixes (in order of impact):
+1. Throttle the whole drive loop to ~10–15 Hz when there was no input/nav this frame and no resize. A 2-line Local<f32> accumulator (same pattern as topbar_time) turns ~150 MB/s of transfers into 30 MB/s, and static pages cost nothing.
+2. Only drive when the browser window is actually the focused/visible window (FocusedTitle), degrade to ~5–10 Hz when merely visible-but-occluded. Skip entirely when minimized (already done).
+3. Eliminate the double copy: give extract the frame via Option::take/Arc<Vec<u8>> instead of Clone.
+4. Reserve/with_capacity the pixel buffer once per engine size, and skip re-upload if pixels are unchanged (cheap compare) — readback alone is far cheaper than readback+clone+upload.
+5. When only the address bar is focused (focus.page == false), the page doesn't need repainting at all — you can pause the entire drive.
+2. Terminal — idle frame waste
+File: apps/terminal.rs
+terminal_render_lines (873–965) — runs every frame unconditionally:
+- Iterates all 64 TerminalLine entities, computes viewport by scanning all row nodes (measured_row_pitch), then per visible line does full.chars().count(), several char_byte scans, and builds selected/post Strings per line before the equality check. Even when nothing changed, you pay ~50+ String allocations and slicing passes per frame for a terminal showing static output.
+- Fix: early-return unless work exists. Gate on state.is_changed() || selection changed || container size changed — i.e. only re-render when the pty produced bytes, the viewport resized, the user scrolled, or a selection was made. Idle cost drops to ~0.
+terminal_selection (760–871) — runs every frame:
+- The hit = lines_query.iter().find_map(...) at the top (line 776) is unconditional whenever the cursor is inside the OS window. When the cursor is over the topbar/dock, it still walks all 64 rows doing try_inverse() per row to conclude "not on a line". That's ~64 matrix inversions per frame forever.
+- Fix: first do a cheap container-bounds check (TerminalOutput node) and only then per-row hit-test; additionally only hit-test on mouse.just_pressed/pressed or cursor movement (compare against a stored last cursor).
+Minor: terminal_sync_output locks+clones the whole pending string and re-parses from scratch each frame — fine, but the string clone of the pending buffer each frame can be replaced by std::mem::take on the guard.
+3. Scroll dispatcher — runs a global hit-test every frame
+File: scroll.rs, wheel_dispatch (149–263)
+The system executes every frame:
+- clears consumed
+- iterates all AppWindows doing node_contains_cursor (try_inverse per window) → topmost_at_cursor
+- iterates all ScrollableAreas with per-node cursor test + a parent-chain walk per area (window_ancestor) collecting into a Vec
+- sorts the Vec, builds an ancestor chain
+…and only then checks for event in wheel_evr.read(). If no wheel message arrived, all of that was pure waste.
+Fix: right after consumed.0 = false; add
+if wheel_evr.is_empty() { return; }
+This is the single cheapest, most surgical win in the whole codebase — the entire dispatch chain becomes event-driven instead of per-frame. (Also scroll_sync_system runs per frame over all areas — gate with a cheap "only when layout/position actually changed" check; it already only writes on change, so this is minor.)
+4. Live2D — exclusive system every frame
+File: crates/n3ri-live2d/src/renderer.rs
+sync_live2d(world: &mut World) (771–865) is registered in lib.rs and runs every frame as an exclusive system. Consequences:
+1. It serializes the schedule. While it runs, no other Update system on other threads can execute — it defeats Bevy's parallelism for everything scheduled around it.
+2. Per frame it allocates: render_orders.to_vec(), pos_ptrs Vec, counts.to_vec(), opacities.to_vec(), mult/scr_ptrs Vecs, masked/inverted/visible Vecs, plus a Vec<[f32;3]> of vertex positions per drawable slot, then insert_attribute on each mesh → per-frame CPU→GPU mesh upload of every drawable.
+3. tick_pet + sync_live2d run even when the pet is fully occluded by windows, in "head bubble" mode, or during a cinematic lock — the model still does full physics/breath + mesh rebuild + RTT render behind the scenes.
+Fixes:
+- Convert sync_live2d to a normal parallel system using Res/Query params (the world-lock is only needed for the drawable pointer reads, which can be done via NonSend<Live2dPet> + Query<&mut Mesh>/ResMut<Assets<...>>). This unblocks schedule parallelism.
+- Skip tick+sync when the pet body is not visible (pet display Visibility::Hidden, or head-mode active, or OsState not Desktop). Breaths/sway resume seamlessly on next frame.
+- Reuse scratch Vecs across frames (Local/Res scratch buffers) instead of allocating per frame; only rebuild meshes whose dynamic_flags actually changed (Cubism already tells you via dynamic_flags() — currently ignored except visible).
+5. Cursor change-detection is broken by design — poisons all gating
+File: cursor.rs, sync_cursor_from_window (39–59)
+CursorPosition/UiArea are ResMut and rewritten unconditionally every frame (area.0 = window.size(); cursor.logical = pos; ... cursor.active = true;), even when the value is identical. In Bevy, any deref-mut write marks the resource changed every frame, so:
+- dock_magnification runs + full-iterates every frame (it does have its own value-compare HashMap, but still pays the iteration)
+- resize_hover_cursor collects + sorts all windows every frame (window_query.iter().collect(); candidates.sort_by_key(...)) even when the cursor hasn't moved (resize.rs 139–140)
+- terminal_selection hit-test, browser_page_input, snap detection etc. can never use run_if(…cursor.is_changed()) as a cheap gate.
+Fix: in sync_cursor_from_window, compare before writing:
+let pos = window.cursor_position();
+let next = ...; if next != cursor.current { *cursor = next; }
+Then add .run_if(|c: Res<CursorPosition>| c.is_changed()) (or .is_added()) to resize_hover_cursor, dock_magnification, terminal_selection, detect_snap_zone, etc. The shell's idle per-frame CPU tax mostly disappears.
+6. Dock & window shell — per-frame scans that should be event-driven
+File: dock.rs
+- dock_update (308–452): every frame iterates all icons and for each does window_query.iter().any(|…|) over all windows to compute the running-dot state, then diffs against a HashMap. Should only run on mouse.just_pressed (for toggling) plus when window visibility actually flips. An event/change-driven pass (or run_if(visibility changed)) removes the permanent O(icons×windows) scan.
+- dock_tooltip (454–469): every frame writes Visibility on tooltip children for all icons even when unchanged — only flip on state change (same pattern as chat_bubble_sync's if *vis != new_vis).
+File: window.rs
+- promote_added_windows (38–77) iterates all windows and allocates two Vecs every frame, only to early-out after a full pass when nothing was added. Use Query<…, Added<AppWindow>> for the added branch; the compaction path only needs to run when the z-limit is actually exceeded.
+File: resize.rs
+- resize_hover_cursor (121–168): per-frame collect + sort_by_key(-z) + edge detection over all windows even when the cursor is still. Should only run when the cursor moved or windows changed (see §5) and should skip the sort when there is exactly one window. It also spawns an insert/remove<CursorIcon> command on transition only — good — but the front work is wasteful.
+File: topbar.rs
+- topbar_poll (478–621): the 1 Hz polling is fine (interval-gated), but it runs on the main thread: /proc/stat read, /proc/net/route read, read_dir("/sys/class/power_supply") every second including a full dir listing even when the battery never changes. Move these three reads onto a background thread with a channel (the pactl path already does this); cache the battery dir handle. Also read_battery re-lists the directory even when no BAT* entry exists.
+7. Apps — every-frame *_sync_ui systems
+- settings.rs settings_sync_ui (1762+) runs every frame even when the Settings window is closed (it just fails get_mut on despawned entities). Gate with run_if(window_exists) or a Local open-flag; settings_poll similarly reads /proc+RC6 every 0.5 s regardless of whether the window is open.
+- mail/files/signal *_sync_ui systems iterate their full row sets per frame comparing text/colors. They do value-compare before writing (good), but can be cheaply gated to only run while their window exists & visible, or when their state resource is is_changed().
+- chat_capsule (chat_capsule_cursor_blink 643–646) writes state.cursor_visible to the resource every frame, forcing ChatCapsuleState.is_changed() true forever → chat_capsule_animate can never skip. Blink should write the toggled value only at the toggle boundary (or store cursor_visible as a Local and compare).
+- chat_sentence_reveal + chat_bubble_sync duplicate the bubble aging/fade logic (both walk shown, both expire entries) every frame — 2× redundant work; merge into one owner system.
+8. Smaller systemic findings
+- Inverse transforms everywhere. ~10 systems independently call transform.try_inverse().transform_point2(cursor) per node per frame (scroll, focus, snap, resize, terminal, browser, mail…). At typical node counts this is dozens of 4×4 matrix inversions per frame. Consider a shared helper resource that precomputes the cursor position in node-local space once, or accept it — it's a micro-cost that compounds with the gating fixes above.
+- main.rs: windowed mode runs with default WinitSettings → Continuous when focused. Every idle frame still re-renders the animated fullscreen background shader + Live2D. If battery matters, offer a "低功耗" toggle that switches WinitSettings to Reactive{wait: ~16ms} and drops the desktop time uniform rate — the codebase already does exactly this for wallpaper mode.
+- toggle_head_display (main.rs 721–756) runs a full overlap computation over all windows every frame — gate on window set/cursor or move to a 10 Hz cadence; the transition it drives is smooth enough.
+- dock_magnification uses Without<crate::scroll::ScrollbarThumb> on a query already filtered by With<DockIcon> — dead filter widening archetype iteration (icons are not thumbs); harmless but remove.
+9. Recommended priority order
+Quick wins (minutes, near-zero risk):
+1. wheel_dispatch: early-out on wheel_evr.is_empty() (§3).
+2. terminal_render_lines / terminal_selection: gate on state/size/selection change + cheap container bounds check (§2).
+3. browser_drive: throttle to ~10 Hz when no input/nav this frame; skip drive when browser not focused (§1).
+4. dock_update, dock_tooltip: make running-dot + tooltip event/change driven (§6).
+5. sync_cursor_from_window: conditional write to restore honest change detection (§5).
+Medium (architectural, high reward):
+6. Browser frame transfer: no per-frame Vec alloc, no Extract clone, mem::take/Arc, 256-aligned row pitch, upload-skip on identical pixels (§1).
+7. Live2D: sync_live2d → parallel system + skip when pet invisible + scratch buffer reuse (§4).
+8. Add run_if(…cursor.is_changed()) to the resize/dock/snap/browser-input family once §5 lands (§5/§6).
+9. Move topbar/settings /proc+sysfs polling off the main thread (§6/§7).
+Verify with numbers before/after: the codebase already ships the tool — cargo run --features profiling + N3RI_PROF=1 (SystemInformationDiagnosticsPlugin) gives per-system CPU attribution. A 60-second idle-desktop capture with the browser and terminal open, before and after changes 1–3, will show most of the win.

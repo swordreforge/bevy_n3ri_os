@@ -38,6 +38,7 @@ use servo::{
 use servo_wgpu_interop_adapter::ServoWgpuInteropAdapter;
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::Arc;
 use url::Url;
 use winit::dpi::PhysicalSize;
 
@@ -198,12 +199,22 @@ impl BrowserEngine {
 #[derive(Default)]
 struct BrowserHost(Option<BrowserEngine>);
 
+/// 本帧待上传的新帧。`pixels` 用 Arc 共享给 render world：
+/// extract 只是引用计数 +1，不再整帧克隆 Vec。
 #[derive(Resource, Default, Clone)]
 pub struct BrowserFrame(Option<FrameDesc>);
 
 #[derive(Clone)]
 struct FrameDesc {
-    pixels: Vec<u8>,
+    pixels: Arc<[u8]>,
+    width: u32,
+    height: u32,
+}
+
+/// 最近一次已上传到 GPU 的帧（用于逐字节比较决定是否跳过上传）。
+#[derive(Resource, Default)]
+struct BrowserLastFrame {
+    pixels: Option<Arc<[u8]>>,
     width: u32,
     height: u32,
 }
@@ -359,6 +370,7 @@ impl Plugin for BrowserPlugin {
 
         app.world_mut().insert_non_send(BrowserHost::default());
         app.init_resource::<BrowserFrame>()
+            .init_resource::<BrowserLastFrame>()
             .init_resource::<CurrentUrl>()
             .init_resource::<BrowserFocus>()
             .init_resource::<UrlBarState>()
@@ -1048,6 +1060,7 @@ fn browser_page_input(
 fn browser_drive(
     mut host: NonSendMut<BrowserHost>,
     mut frame: ResMut<BrowserFrame>,
+    mut last: ResMut<BrowserLastFrame>,
     mut pending: ResMut<PendingNav>,
     home: Res<HomeUrl>,
     page: Query<(Entity, &ChildOf, &ComputedNode), With<BrowserPage>>,
@@ -1142,11 +1155,25 @@ fn browser_drive(
 
     if let Some(image) = engine.interop.rendering_context_handle().read_full_frame() {
         let (w, h) = image.dimensions();
-        frame.0 = Some(FrameDesc {
-            pixels: image.into_raw(),
-            width: w,
-            height: h,
-        });
+        let pixels: Arc<[u8]> = Arc::from(image.into_raw());
+        // 与上一次已上传帧逐字节比较：内容未变则本帧不上传（frame=None），
+        // GPU 纹理保持旧内容即可，省掉整条 extract → write_texture 链路。
+        let identical =
+            last.width == w && last.height == h && last.pixels.as_deref() == Some(pixels.as_ref());
+        if identical {
+            frame.0 = None;
+        } else {
+            frame.0 = Some(FrameDesc {
+                pixels: pixels.clone(),
+                width: w,
+                height: h,
+            });
+            last.pixels = Some(pixels);
+            last.width = w;
+            last.height = h;
+        }
+    } else {
+        frame.0 = None;
     }
 
     if let Some(new_view) = engine
@@ -1192,6 +1219,8 @@ fn browser_session_track(
     mut focus: ResMut<BrowserFocus>,
     mut pending: ResMut<PendingNav>,
     mut current: ResMut<CurrentUrl>,
+    mut frame: ResMut<BrowserFrame>,
+    mut last: ResMut<BrowserLastFrame>,
     mut was_open: Local<bool>,
 ) {
     let open = !pages.is_empty();
@@ -1200,6 +1229,8 @@ fn browser_session_track(
         *focus = BrowserFocus::default();
         pending.0 = None;
         current.0 = home.0.clone();
+        frame.0 = None;
+        *last = BrowserLastFrame::default();
         if let Some(engine) = host.0.as_mut() {
             engine.detach_session();
         }

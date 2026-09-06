@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 use bevy::window::{CursorIcon, PrimaryWindow, SystemCursorIcon};
 
-use crate::cursor::CursorPosition;
+use crate::cursor::{cursor_changed, CursorPosition};
 use crate::dock::IsDragging;
 use crate::window::{AppWindow, CinematicLocked};
 
@@ -14,7 +14,7 @@ impl Plugin for ResizePlugin {
         app.insert_resource(ResizeState::default()).add_systems(
             Update,
             (
-                resize_hover_cursor,
+                resize_hover_cursor.run_if(cursor_changed),
                 resize_start,
                 resize_apply.after(resize_start),
                 resize_end.after(resize_start),

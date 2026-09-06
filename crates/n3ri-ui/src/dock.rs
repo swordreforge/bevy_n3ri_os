@@ -2,7 +2,7 @@ use bevy::prelude::*;
 use bevy::ecs::relationship::Relationship;
 use std::collections::HashMap;
 
-use crate::cursor::{CursorPosition, UiArea};
+use crate::cursor::{cursor_changed, CursorPosition, UiArea};
 use crate::font::N3riFonts;
 use crate::window::AppWindow;
 
@@ -13,7 +13,11 @@ impl Plugin for DockPlugin {
         app.init_resource::<IsDragging>()
             .add_systems(
                 Update,
-                (dock_magnification, dock_update, dock_tooltip),
+                (
+                    dock_magnification.run_if(cursor_changed),
+                    dock_update,
+                    dock_tooltip,
+                ),
             );
     }
 }
@@ -309,6 +313,14 @@ fn dock_update(
     mouse: Res<ButtonInput<MouseButton>>,
     icon_query: Query<(Entity, &DockIcon, &Interaction, &Children)>,
     mut window_query: Query<(Entity, &AppWindow, &mut AppVisible)>,
+    changed_windows: Query<
+        (),
+        (
+            With<AppWindow>,
+            Without<RunningIndicator>,
+            Or<(Changed<Visibility>, Added<AppWindow>)>,
+        ),
+    >,
     dock_query: Query<&ChildOf, With<Dock>>,
     mut indicator_query: Query<&mut Visibility, With<RunningIndicator>>,
     mut image_query: Query<&mut ImageNode>,
@@ -317,6 +329,7 @@ fn dock_update(
     mut commands: Commands,
     mut browser_launch: ResMut<crate::apps::browser::BrowserLaunch>,
     mut last_running: Local<HashMap<Entity, bool>>,
+    mut removed: RemovedComponents<AppWindow>,
 ) {
     if mouse.just_pressed(MouseButton::Left) {
         for (_, icon, interaction, _) in icon_query.iter() {
@@ -418,6 +431,14 @@ fn dock_update(
         }
     }
 
+    // 运行指示只依赖窗口可见性：无点击、无可见性变化、无窗口增删时，
+    // 不必每帧做 icon×window 全量扫描。
+    let visible_changed = !changed_windows.is_empty();
+    let removed_any = removed.read().next().is_some();
+    if !mouse.just_pressed(MouseButton::Left) && !visible_changed && !removed_any {
+        return;
+    }
+
     for (entity, icon, _, children) in icon_query.iter() {
         let is_running = window_query.iter().any(|(_, w, vis)| {
             w.app_id == icon.app_name && vis.0
@@ -452,10 +473,15 @@ fn dock_update(
 }
 
 fn dock_tooltip(
-    icon_query: Query<(&Interaction, &Children), With<DockIcon>>,
+    icon_query: Query<(Entity, &Interaction, &Children), With<DockIcon>>,
     mut tooltip_query: Query<&mut Visibility, With<DockTooltip>>,
+    mut last: Local<HashMap<Entity, Interaction>>,
 ) {
-    for (interaction, children) in icon_query.iter() {
+    for (entity, interaction, children) in icon_query.iter() {
+        if last.get(&entity).copied() == Some(*interaction) {
+            continue;
+        }
+        last.insert(entity, *interaction);
         let show = *interaction == Interaction::Hovered;
         for child in children.iter() {
             if let Ok(mut vis) = tooltip_query.get_mut(child) {
@@ -466,5 +492,19 @@ fn dock_tooltip(
                 };
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bevy::ecs::schedule::Schedule;
+
+    #[test]
+    fn dock_systems_init_without_b0001() {
+        let mut world = World::new();
+        let mut schedule = Schedule::default();
+        schedule.add_systems((dock_magnification, dock_update, dock_tooltip));
+        schedule.initialize(&mut world);
     }
 }

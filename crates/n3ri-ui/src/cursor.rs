@@ -44,18 +44,44 @@ pub fn sync_cursor_from_window(
     let Ok(window) = windows.single() else {
         return;
     };
-    area.0 = window.size();
+    let size = window.size();
+    if area.0 != size {
+        area.0 = size;
+    }
     match window.cursor_position() {
         Some(pos) => {
-            cursor.logical = pos;
-            cursor.scale = window.scale_factor();
-            cursor.physical = window
+            let scale = window.scale_factor();
+            let physical = window
                 .physical_cursor_position()
-                .unwrap_or_else(|| pos * cursor.scale);
-            cursor.active = true;
+                .unwrap_or_else(|| pos * scale);
+            let next = CursorPosition {
+                logical: pos,
+                physical,
+                scale,
+                active: true,
+            };
+            // 仅当值真实变化才写：无条件写入会让 ResMut 每帧 marked changed，
+            // 下游所有 cursor.is_changed() 门控全部失效（本轮性能修复的前提）。
+            if cursor.logical != next.logical
+                || cursor.physical != next.physical
+                || cursor.scale != next.scale
+                || !cursor.active
+            {
+                *cursor = next;
+            }
         }
-        None => cursor.active = false,
+        None => {
+            if cursor.active {
+                cursor.active = false;
+            }
+        }
     }
+}
+
+/// 供依赖光标位置的纯轮询系统作 `run_if`：光标移动、进出界面或界面尺寸
+/// 变化（缩放因子/窗口大小）任一发生才需要重算。
+pub fn cursor_changed(cursor: Res<CursorPosition>, area: Res<UiArea>) -> bool {
+    cursor.is_changed() || area.is_changed()
 }
 
 pub struct CursorPlugin;

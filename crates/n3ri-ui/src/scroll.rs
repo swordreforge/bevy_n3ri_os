@@ -175,6 +175,10 @@ pub(crate) fn wheel_dispatch(
     >,
 ) {
     consumed.0 = false;
+    // 快速赢点：无滚轮消息时整条 hit-test / 冒泡链都是白跑，直接跳过。
+    if wheel_evr.is_empty() {
+        return;
+    }
     if !cursor.active {
         return;
     }

@@ -556,8 +556,14 @@ fn terminal_input(
     mut state: ResMut<TerminalState>,
     focused: Res<FocusedTitle>,
     owner: Res<TextInputOwner>,
+    terminal_open: Query<(), With<TerminalOutput>>,
 ) {
-    state.ensure_pty();
+    // 窗口存在且 PTY 未初始化时才触碰 state：无条件 ensure_pty 会在每帧
+    // deref ResMut → TerminalState 每帧 marked changed → 下游渲染无法做
+    // is_changed 门控；同时避免关窗后残留一个无人使用的后台 sh。
+    if !terminal_open.is_empty() && !state.initialized {
+        state.ensure_pty();
+    }
 
     if focused.title != "终端" || !owner.is(TextInputFocus::Terminal) || state.composing {
         keyboard_inputs.clear();
@@ -730,6 +736,11 @@ fn terminal_sync_output(
         }
     }
 
+    // 无滚轮消息时连光标悬停检测都不必做（该检测每帧都要 inverse transform）。
+    if mouse_wheel.is_empty() {
+        return;
+    }
+
     let cursor_over_terminal = focused.title == "终端"
         && cursor.active
         && output.iter().any(|(node, transform)| {
@@ -772,6 +783,16 @@ fn terminal_selection(
         return;
     }
     let cursor = cursor.physical;
+
+    // 无左键活动（按下/按住/松开）时整段选择逻辑无事可做：跳过 per-line
+    // hit-test（原先每帧对全部 64 行做 inverse transform，鼠标在顶栏/dock
+    // 上静止也照扫）。
+    if !mouse.just_pressed(MouseButton::Left)
+        && !mouse.pressed(MouseButton::Left)
+        && !mouse.just_released(MouseButton::Left)
+    {
+        return;
+    }
 
     let hit = lines_query.iter().find_map(|(line, node, transform, layout)| {
         if line.li == NO_LINE {
@@ -874,20 +895,32 @@ fn terminal_render_lines(
     state: Res<TerminalState>,
     container_query: Query<&ComputedNode, With<TerminalOutput>>,
     row_nodes: Query<&ComputedNode, With<TerminalLine>>,
+    new_container: Query<(), (With<TerminalOutput>, Added<TerminalOutput>)>,
     mut lines_query: Query<(&mut TerminalLine, &Children, &mut Text, &mut Visibility)>,
     mut span_query: Query<(
         &mut TextSpan,
         Option<&mut TextBackgroundColor>,
         Option<&mut TextColor>,
     )>,
+    mut last_viewport: Local<usize>,
 ) {
-    let viewport_lines = match container_query.iter().next() {
-        Some(container) => {
-            let pitch = measured_row_pitch(&row_nodes);
-            viewport_from(container, pitch)
-        }
-        None => 24,
+    let Some(container) = container_query.iter().next() else {
+        return;
     };
+    let viewport_lines = viewport_from(container, measured_row_pitch(&row_nodes));
+
+    // 内容/几何都未变化、且终端容器不是本帧新建时跳过整轮文本重建——
+    // 空闲终端每帧仍在做 per-line 字符串切片 + 分配，纯属浪费。
+    // （用 TerminalOutput 的 Added 而非 TerminalLine：避免与 &mut TerminalLine
+    // 参数构成 B0001 访问冲突。）
+    if !state.is_changed()
+        && new_container.is_empty()
+        && *last_viewport == viewport_lines
+    {
+        return;
+    }
+    *last_viewport = viewport_lines;
+
     let start = state.visible_start(viewport_lines);
 
     for (mut line, children, mut text, mut vis) in lines_query.iter_mut() {
@@ -1070,4 +1103,24 @@ fn select_word(state: &TerminalState, pos: BufferPos) -> Selection {
             ch: end,
         },
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bevy::ecs::schedule::Schedule;
+
+    #[test]
+    fn terminal_systems_init_without_b0001() {
+        let mut world = World::new();
+        let mut schedule = Schedule::default();
+        schedule.add_systems((
+            terminal_input,
+            terminal_ime,
+            terminal_sync_output,
+            terminal_selection,
+            terminal_render_lines,
+        ));
+        schedule.initialize(&mut world);
+    }
 }

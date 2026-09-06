@@ -59,6 +59,10 @@ const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/
 const SEED_SIZE: (u32, u32) = (1024, 600);
 /// 默认页面缩放（浏览器式 zoom，Servo 范围 0.1~10.0；等价 Ctrl+'+' × 2.5）
 const PAGE_ZOOM: f32 = 2.0;
+/// 页面聚焦时无输入/导航/尺寸变化的兜底驱动间隔（20fps：加载进度/CSS 动画仍可感知）
+const DRIVE_IDLE_FOCUSED: f32 = 1.0 / 20.0;
+/// 浏览器失焦（被其他窗口遮挡）时的兜底驱动间隔（后台页面无需流畅刷新）
+const DRIVE_IDLE_BACKGROUND: f32 = 0.25;
 
 const TOOLBAR_H: f32 = 36.0;
 const BAR_TEXT_SIZE: f32 = 13.0;
@@ -94,6 +98,11 @@ struct HomeUrl(String);
 
 #[derive(Resource, Default)]
 struct PendingNav(Option<NavCommand>);
+
+/// 本帧页面是否收到过输入（`browser_page_input` 置位，`browser_drive` 消费）：
+/// 有交互的帧必须立即驱动 Servo 取新帧，不进入 idle 节流。
+#[derive(Resource, Default)]
+struct BrowserNeedsFrame(bool);
 
 enum NavCommand {
     Load(String),
@@ -354,6 +363,7 @@ impl Plugin for BrowserPlugin {
             .init_resource::<BrowserFocus>()
             .init_resource::<UrlBarState>()
             .init_resource::<PendingNav>()
+            .init_resource::<BrowserNeedsFrame>()
             .init_resource::<BrowserImeAnchor>()
             .init_resource::<BrowserLaunch>()
             .insert_resource(HomeUrl(default_home()))
@@ -876,6 +886,7 @@ fn browser_page_input(
     mut buttons: MessageReader<MouseButtonInput>,
     mut wheels: MessageReader<MouseWheel>,
     ui_consumed: Res<UiWheelConsumed>,
+    mut needs: ResMut<BrowserNeedsFrame>,
     mut last_content: Local<Option<Vec2>>,
     mut prev_page: Local<bool>,
 ) {
@@ -919,6 +930,7 @@ fn browser_page_input(
             }
         }
         let kbd = browser_keyutils::keyboard_event_from_bevy(ev, &keys);
+        needs.0 = true;
         webview.notify_input_event(InputEvent::Keyboard(kbd));
     }
 
@@ -961,16 +973,19 @@ fn browser_page_input(
                 continue;
             }
         }
+        needs.0 = true;
         webview.notify_input_event(InputEvent::Ime(event));
     }
 
     match (content, *last_content) {
         (Some(p), prev) if Some(p) != prev => {
+            needs.0 = true;
             webview.notify_input_event(InputEvent::MouseMove(MouseMoveEvent::new(
                 servo::WebViewPoint::Device(DevicePoint::new(p.x, p.y)),
             )));
         }
         (None, Some(_)) => {
+            needs.0 = true;
             webview.notify_input_event(InputEvent::MouseLeftViewport(
                 MouseLeftViewportEvent::default(),
             ));
@@ -995,6 +1010,7 @@ fn browser_page_input(
             ButtonState::Pressed => MouseButtonAction::Down,
             ButtonState::Released => MouseButtonAction::Up,
         };
+        needs.0 = true;
         webview.notify_input_event(InputEvent::MouseButton(MouseButtonEvent::new(
             action,
             servo_button,
@@ -1016,6 +1032,7 @@ fn browser_page_input(
             ),
             MouseScrollUnit::Pixel => (f64::from(ev.x), f64::from(ev.y), WheelMode::DeltaPixel),
         };
+        needs.0 = true;
         webview.notify_input_event(InputEvent::Wheel(WheelEvent::new(
             WheelDelta {
                 x: dx,
@@ -1035,6 +1052,10 @@ fn browser_drive(
     home: Res<HomeUrl>,
     page: Query<(Entity, &ChildOf, &ComputedNode), With<BrowserPage>>,
     windows: Query<(&AppWindow, &AppVisible)>,
+    focused: Res<FocusedTitle>,
+    time: Res<Time>,
+    mut needs: ResMut<BrowserNeedsFrame>,
+    mut idle_acc: Local<f32>,
 ) {
     let Ok((_, child_of, node)) = page.single() else {
         return;
@@ -1046,10 +1067,14 @@ fn browser_drive(
         return;
     }
 
+    let mut forced = needs.0;
+    needs.0 = false;
+
     if host.0.is_none() {
         info!("[browser] 首次启动 Servo 引擎…");
         *host = BrowserHost(Some(build_engine(&home.0)));
         info!("[browser] Servo 引擎就绪");
+        forced = true;
     }
     let Some(engine) = host.0.as_mut() else {
         return;
@@ -1059,6 +1084,7 @@ fn browser_drive(
         // 关窗后重开：轻量重建页面会话（引擎/GL 常驻），直接回起始页
         info!("[browser] 重建页面会话 → {}", home.0);
         engine.build_session(&home.0);
+        forced = true;
     }
     let Some(webview) = engine.webview.as_mut() else {
         return;
@@ -1069,6 +1095,22 @@ fn browser_drive(
     if new_size != engine.size {
         webview.resize(new_size);
         engine.size = new_size;
+        forced = true;
+    }
+
+    // 节流：本帧无输入/导航/尺寸变化时按 idle 频率驱动。避免静态页面每帧
+    // spin + paint + read_full_frame（~3MB 分配/拷贝）+ GPU 上传。
+    if !forced && pending.0.is_none() {
+        *idle_acc += time.delta_secs();
+        let interval = if focused.title == BROWSER_TITLE {
+            DRIVE_IDLE_FOCUSED
+        } else {
+            DRIVE_IDLE_BACKGROUND
+        };
+        if *idle_acc < interval {
+            return;
+        }
+        *idle_acc = 0.0;
     }
 
     if let Some(command) = pending.0.take() {

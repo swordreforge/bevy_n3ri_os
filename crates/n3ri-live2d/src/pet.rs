@@ -123,13 +123,15 @@ impl Live2dPet {
             v.copy_from_slice(&self.saved_params);
             pops.copy_from_slice(&self.saved_parts);
 
-            let empty_ids: Vec<String> = Vec::new();
+            // 每 tick 一次的空切片：`do_update_motion` 只读，直接借用静态空切片，
+            // 不再每帧堆分配两个 `Vec<String>`。
+            let empty_ids: &[String] = &[];
             for q in self.queues.iter_mut() {
                 q.do_update_motion(
                     &self.param_lookup,
                     v,
-                    &empty_ids,
-                    &empty_ids,
+                    empty_ids,
+                    empty_ids,
                     &self.part_lookup,
                     pops,
                 );

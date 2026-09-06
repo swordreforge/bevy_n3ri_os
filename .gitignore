@@ -11,4 +11,5 @@ assets_dev/
 /panic.txt
 .commandcode/
 reference/
+perf.data
 

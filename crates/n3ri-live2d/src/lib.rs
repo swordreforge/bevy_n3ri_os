@@ -37,7 +37,8 @@ use bevy_tweening::TweeningPlugin;
 
 pub use renderer::{
     spawn_head_display, spawn_pet_display, HeadDisplay, Live2dDrawableMaterial, PetDisplayImage,
-    PetDisplayNode, PetHeadImage, PetMapping, PetRenderConfig, PetTargetArea, PetViewSize,
+    PetDisplayNode, PetDrawable, PetHeadImage, PetMapping, PetRenderConfig, PetTargetArea,
+    PetViewSize,
 };
 pub use head_anim::HeadDisplayWanted;
 pub use pet::{HeadHitArea, HeadPettingState, IdleTimer, Live2dPet, PettingState};
@@ -64,6 +65,7 @@ impl Plugin for N3riLive2dPlugin {
                 (
                     renderer::tick_pet.run_if(renderer::pet_display_on),
                     renderer::refit_pet_view,
+                    renderer::gate_pet_cameras,
                     renderer::sync_live2d.run_if(renderer::pet_display_on),
                 )
                     .chain(),

@@ -314,6 +314,11 @@ pub struct PetHeadImage(pub Option<Handle<Image>>);
 #[derive(Component)]
 pub struct PetDisplayNode;
 
+/// 宠物 drawable 槽位实体标记：把 `sync_live2d` 的查询收窄到宠物自身，
+/// 避免 `With<Mesh2d>` 扫到全场 UI 网格。
+#[derive(Component)]
+pub struct PetDrawable;
+
 // ── setup (exclusive Startup system) ──
 
 pub fn load_and_setup_pet(world: &mut World) {
@@ -519,6 +524,7 @@ pub fn load_and_setup_pet(world: &mut World) {
         let mat_h = mat_handles[i].clone();
         let entity = world
             .spawn((
+                PetDrawable,
                 Mesh2d(mesh_h.clone()),
                 MeshMaterial2d(mat_h.clone()),
                 Transform::from_xyz(0.0, 0.0, i as f32),
@@ -781,9 +787,14 @@ fn read_vec4(ptr: *const f32) -> Vec4 {
 ///
 /// 原先为 `world: &mut World` 独占系统（每帧串行化整个 Update）；现改为普通
 /// 并行系统：pet 只读 + Assets/Query 参数，只与 `tick_pet`（同读写 pet）串行，
-/// 桌面其余系统可并行执行。顶点坐标写入 mesh 属性改用 in-place `attribute_mut`，
-/// 顶点缓冲由 `Local` scratch 复用，不再每帧克隆 slots / 构造 FrameDrawData /
-/// 重建 attribute Vec。
+/// 桌面其余系统可并行执行。
+///
+/// 写放大的两处克制（profile：FreeListAllocator::allocate ~17% +
+/// MeshSlabAllocator::allocate ~4% 全是逐帧全量标脏所致）：
+/// 1. 材质先 `get` 读比对，变化才 `get_mut` —— `AssetMut::DerefMut` 一触即
+///    发 `Modified`，无条件写会让 render world 每帧重建全部 BindGroup；
+/// 2. 顶点直写 mesh 缓冲，不再经 `Local` scratch 中转（省一次 push+copy）。
+/// 查询收窄到 `PetDrawable`，不再 `With<Mesh2d>` 扫全场 UI 网格。
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn sync_live2d(
     pet: NonSend<Live2dPet>,
@@ -791,9 +802,8 @@ pub(crate) fn sync_live2d(
     mapping: Res<PetMapping>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<Live2dDrawableMaterial>>,
-    mut slot_entities: Query<(Entity, Option<&mut Visibility>, &mut Transform), With<Mesh2d>>,
+    mut slot_entities: Query<(Entity, Option<&mut Visibility>, &mut Transform), With<PetDrawable>>,
     mut commands: Commands,
-    mut pos_scratch: Local<Vec<[f32; 3]>>,
 ) {
     let d = pet.model.drawables();
     let positions = d.vertex_positions();
@@ -808,29 +818,29 @@ pub(crate) fn sync_live2d(
 
     for &(entity, i, ref mesh_h, ref mat_h) in &rig.slots {
         let n = counts[i].max(0) as usize;
-        pos_scratch.clear();
-        if n > 0 {
-            // 顶点坐标在 Cubism 中以 (x0,y0)(x1,y1)… 连续 f32 对存放，逐点映射进 RTT 像素空间。
-            let base = positions[i] as *const f32;
-            pos_scratch.reserve(n); // 顶点数恒定，仅首次分配
-            for vi in 0..n {
-                let (x, y) = unsafe { (*base.add(vi * 2), *base.add(vi * 2 + 1)) };
-                pos_scratch.push(mapping.apply(x, y));
-            }
-        }
 
-        // 顶点数不变时 in-place 覆盖既有 Float32x3 缓冲（零分配）；异常变化才回退
-        // 到整属性替换（等价旧路径）。
+        // 顶点坐标在 Cubism 中以 (x0,y0)(x1,y1)… 连续 f32 对存放，逐点映射进
+        // RTT 像素空间后直写 mesh 缓冲；顶点数异常变化才回退到整属性替换。
         if let Some(mut mesh) = meshes.get_mut(mesh_h) {
-            let needs_replace = match mesh.attribute_mut(Mesh::ATTRIBUTE_POSITION) {
-                Some(VertexAttributeValues::Float32x3(v)) if v.len() == pos_scratch.len() => {
-                    v.copy_from_slice(&pos_scratch);
-                    false
+            let matched = match mesh.attribute_mut(Mesh::ATTRIBUTE_POSITION) {
+                Some(VertexAttributeValues::Float32x3(v)) if v.len() == n => {
+                    let base = positions[i] as *const f32;
+                    for (vi, slot) in v.iter_mut().enumerate() {
+                        let (x, y) = unsafe { (*base.add(vi * 2), *base.add(vi * 2 + 1)) };
+                        *slot = mapping.apply(x, y);
+                    }
+                    true
                 }
-                _ => true,
+                _ => false,
             };
-            if needs_replace {
-                mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, pos_scratch.clone());
+            if !matched {
+                let base = positions[i] as *const f32;
+                let mut rebuilt = Vec::with_capacity(n);
+                for vi in 0..n {
+                    let (x, y) = unsafe { (*base.add(vi * 2), *base.add(vi * 2 + 1)) };
+                    rebuilt.push(mapping.apply(x, y));
+                }
+                mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, rebuilt);
             }
         }
 
@@ -839,16 +849,28 @@ pub(crate) fn sync_live2d(
         // constant in our bindings): inverted → visible INSIDE mask shape.
         let inverted = const_flags[i] & 8 != 0;
         let show = opacities[i] >= OPACITY_EPSILON && dyn_flags[i] & 1 != 0;
-        if let Some(mut mat) = materials.get_mut(mat_h) {
-            mat.uniforms.flags = Vec4::new(
-                opacities[i],
-                if masked { 1.0 } else { 0.0 },
-                0.0,
-                if inverted { 1.0 } else { 0.0 },
-            );
-            mat.uniforms.multiply_color =
-                read_vec4(std::ptr::from_ref(&multiply[i]) as *const f32);
-            mat.uniforms.screen_color = read_vec4(std::ptr::from_ref(&screen[i]) as *const f32);
+        let want_flags = Vec4::new(
+            opacities[i],
+            if masked { 1.0 } else { 0.0 },
+            0.0,
+            if inverted { 1.0 } else { 0.0 },
+        );
+        let want_multiply = read_vec4(std::ptr::from_ref(&multiply[i]) as *const f32);
+        let want_screen = read_vec4(std::ptr::from_ref(&screen[i]) as *const f32);
+        let dirty = match materials.get(mat_h) {
+            Some(cur) => {
+                cur.uniforms.flags != want_flags
+                    || cur.uniforms.multiply_color != want_multiply
+                    || cur.uniforms.screen_color != want_screen
+            }
+            None => false,
+        };
+        if dirty {
+            if let Some(mut mat) = materials.get_mut(mat_h) {
+                mat.uniforms.flags = want_flags;
+                mat.uniforms.multiply_color = want_multiply;
+                mat.uniforms.screen_color = want_screen;
+            }
         }
 
         if let Ok((_, vis, mut tf)) = slot_entities.get_mut(entity) {
@@ -865,6 +887,44 @@ pub(crate) fn sync_live2d(
             let want_z = orders[i] as f32;
             if tf.translation.z != want_z {
                 tf.translation.z = want_z;
+            }
+        }
+    }
+}
+
+/// RTT 相机门控：宠物/头部显示节点隐藏时关掉对应相机 `is_active`，
+/// 让 RTT 跳过 clear + 全量重画。`tick/sync` 已被 `pet_display_on` 门控，
+/// 但相机不关的话 GPU 侧每帧仍在空转（pet 全尺寸 + head 256 全套重画）。
+/// 只在目标状态变化时写，避免每帧触碰 `Camera` 触发 change detection。
+pub(crate) fn gate_pet_cameras(
+    rig: Option<Res<PetRefitRig>>,
+    render_rig: Option<Res<Live2dRenderRig>>,
+    display: Query<&Visibility, With<PetDisplayNode>>,
+    head: Query<&Visibility, With<HeadDisplay>>,
+    mut cameras: Query<&mut Camera>,
+) {
+    let Some(rig) = rig else {
+        return;
+    };
+    let pet_visible = display.iter().any(|v| *v != Visibility::Hidden);
+    let head_visible = head.single().is_ok_and(|v| *v != Visibility::Hidden);
+
+    if let Ok(mut cam) = cameras.get_mut(rig.pet_camera) {
+        if cam.is_active != pet_visible {
+            cam.is_active = pet_visible;
+        }
+    }
+    if let Ok(mut cam) = cameras.get_mut(rig.head_camera) {
+        if cam.is_active != head_visible {
+            cam.is_active = head_visible;
+        }
+    }
+    if let Some(render_rig) = render_rig.as_ref() {
+        for group in &render_rig._mask_groups {
+            if let Ok(mut cam) = cameras.get_mut(group._camera_entity) {
+                if cam.is_active != pet_visible {
+                    cam.is_active = pet_visible;
+                }
             }
         }
     }

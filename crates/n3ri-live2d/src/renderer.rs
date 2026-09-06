@@ -24,7 +24,7 @@ use bevy::camera::ScalingMode;
 use bevy::camera::visibility::RenderLayers;
 use bevy::image::{Image, ImageSampler};
 use bevy::math::{Vec2, Vec4};
-use bevy::mesh::{Indices, Mesh, Mesh2d, PrimitiveTopology};
+use bevy::mesh::{Indices, Mesh, Mesh2d, PrimitiveTopology, VertexAttributeValues};
 use bevy::prelude::*;
 use bevy::render::render_resource::{
     AsBindGroup, BlendComponent, BlendFactor, BlendOperation, BlendState, Extent3d,
@@ -752,113 +752,103 @@ pub fn tick_pet(mut pet: NonSendMut<Live2dPet>, time: Res<Time>) {
     pet.tick(time.delta_secs(), time.elapsed_secs());
 }
 
-struct FrameDrawData {
-    pos_ptrs: Vec<*const f32>,
-    counts: Vec<i32>,
-    opacities: Vec<f32>,
-    mult_ptrs: Vec<*const f32>,
-    scr_ptrs: Vec<*const f32>,
-    orders: Vec<i32>,
-    masked: Vec<bool>,
-    inverted: Vec<bool>,
-    visible: Vec<bool>,
+/// 宠物显示节点挂载且未被显式隐藏时才驱动整条渲染链（启动/加载阶段宠物未
+/// 挂载、或桌面显式隐藏宠物时跳过模型 tick/网格/材质同步，避免后台空转）。
+pub(crate) fn pet_display_on(display: Query<&Visibility, With<PetDisplayNode>>) -> bool {
+    display.iter().any(|v| *v != Visibility::Hidden)
 }
 
 fn read_vec4(ptr: *const f32) -> Vec4 {
     unsafe { Vec4::from_array([*ptr, *ptr.add(1), *ptr.add(2), *ptr.add(3)]) }
 }
 
-pub fn sync_live2d(world: &mut World) {
-    let Some(rig) = world.get_resource::<Live2dRenderRig>() else {
-        return;
-    };
-    let Some(mapping) = world.get_resource::<PetMapping>() else {
-        return;
-    };
-    let slots = rig.slots.clone();
-    let mapping = *mapping;
+/// 逐帧把 Cubism 计算结果同步到 Bevy 网格/材质/实体。
+///
+/// 原先为 `world: &mut World` 独占系统（每帧串行化整个 Update）；现改为普通
+/// 并行系统：pet 只读 + Assets/Query 参数，只与 `tick_pet`（同读写 pet）串行，
+/// 桌面其余系统可并行执行。顶点坐标写入 mesh 属性改用 in-place `attribute_mut`，
+/// 顶点缓冲由 `Local` scratch 复用，不再每帧克隆 slots / 构造 FrameDrawData /
+/// 重建 attribute Vec。
+pub fn sync_live2d(
+    pet: NonSend<Live2dPet>,
+    rig: Res<Live2dRenderRig>,
+    mapping: Res<PetMapping>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<Live2dDrawableMaterial>>,
+    mut slot_entities: Query<(Entity, Option<&mut Visibility>, &mut Transform), With<Mesh2d>>,
+    mut commands: Commands,
+    mut pos_scratch: Local<Vec<[f32; 3]>>,
+) {
+    let d = pet.model.drawables();
+    let positions = d.vertex_positions();
+    let counts = d.vertex_counts();
+    let opacities = d.opacities();
+    let multiply = d.multiply_colors();
+    let screen = d.screen_colors();
+    let mask_counts = d.mask_counts();
+    let const_flags = d.constant_flags();
+    let dyn_flags = d.dynamic_flags();
+    let orders = pet.model.render_orders();
 
-    let frame = {
-        let pet = world.non_send::<Live2dPet>();
-        let d = pet.model.drawables();
-        let count = d.len();
-        let dyn_flags = d.dynamic_flags();
-        let const_flags = d.constant_flags();
-        let all_render_orders = pet.model.render_orders();
-        let render_orders: Vec<i32> = all_render_orders[..count].to_vec();
-        FrameDrawData {
-            pos_ptrs: d.vertex_positions()[..count]
-                .iter()
-                .map(|p| *p as *const f32)
-                .collect(),
-            counts: d.vertex_counts().to_vec(),
-            opacities: d.opacities().to_vec(),
-            mult_ptrs: d.multiply_colors()[..count]
-                .iter()
-                .map(|p| std::ptr::from_ref(p) as *const f32)
-                .collect(),
-            scr_ptrs: d.screen_colors()[..count]
-                .iter()
-                .map(|p| std::ptr::from_ref(p) as *const f32)
-                .collect(),
-            orders: render_orders,
-            masked: d.mask_counts().iter().map(|&c| c > 0).collect(),
-            // csmIsInvertedMask = 1 << 3 in the Cubism Core header (no named
-            // constant in our bindings): inverted → visible INSIDE mask shape.
-            inverted: const_flags[..count].iter().map(|&f| f & 8 != 0).collect(),
-            visible: dyn_flags.iter().map(|&f| f & 1 != 0).collect(),
-        }
-    };
-
-    {
-        let mut meshes = world.resource_mut::<Assets<Mesh>>();
-        for (_, i, mesh_h, _) in &slots {
-            let n = frame.counts[*i].max(0) as usize;
-            if n == 0 {
-                continue;
-            }
-            let positions: Vec<[f32; 3]> = (0..n)
-                .map(|vi| unsafe {
-                    mapping.apply(
-                        *frame.pos_ptrs[*i].add(vi * 2),
-                        *frame.pos_ptrs[*i].add(vi * 2 + 1),
-                    )
-                })
-                .collect();
-            if let Some(mut mesh) = meshes.get_mut(mesh_h) {
-                mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+    for &(entity, i, ref mesh_h, ref mat_h) in &rig.slots {
+        let n = counts[i].max(0) as usize;
+        pos_scratch.clear();
+        if n > 0 {
+            // 顶点坐标在 Cubism 中以 (x0,y0)(x1,y1)… 连续 f32 对存放，逐点映射进 RTT 像素空间。
+            let base = positions[i] as *const f32;
+            pos_scratch.reserve(n); // 顶点数恒定，仅首次分配
+            for vi in 0..n {
+                let (x, y) = unsafe { (*base.add(vi * 2), *base.add(vi * 2 + 1)) };
+                pos_scratch.push(mapping.apply(x, y));
             }
         }
-    }
 
-    {
-        let mut materials = world.resource_mut::<Assets<Live2dDrawableMaterial>>();
-        for (_, i, _, mat_h) in &slots {
-            if let Some(mut mat) = materials.get_mut(mat_h) {
-                mat.uniforms.flags = Vec4::new(
-                    frame.opacities[*i],
-                    frame.masked[*i] as u32 as f32,
-                    0.0,
-                    frame.inverted[*i] as u32 as f32,
-                );
-                mat.uniforms.multiply_color = read_vec4(frame.mult_ptrs[*i]);
-                mat.uniforms.screen_color = read_vec4(frame.scr_ptrs[*i]);
+        // 顶点数不变时 in-place 覆盖既有 Float32x3 缓冲（零分配）；异常变化才回退
+        // 到整属性替换（等价旧路径）。
+        if let Some(mut mesh) = meshes.get_mut(mesh_h) {
+            let needs_replace = match mesh.attribute_mut(Mesh::ATTRIBUTE_POSITION) {
+                Some(VertexAttributeValues::Float32x3(v)) if v.len() == pos_scratch.len() => {
+                    v.copy_from_slice(&pos_scratch);
+                    false
+                }
+                _ => true,
+            };
+            if needs_replace {
+                mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, pos_scratch.clone());
             }
         }
-    }
 
-    for (entity, i, _, _) in &slots {
-        let visible = frame.opacities[*i] >= OPACITY_EPSILON && frame.visible[*i];
-        let Ok(mut ent) = world.get_entity_mut(*entity) else { continue };
-        let cur_visible =
-            ent.get::<Visibility>().map(|v| *v != Visibility::Hidden).unwrap_or(true);
-        if visible != cur_visible {
-            ent.insert(if visible { Visibility::Visible } else { Visibility::Hidden });
+        let masked = mask_counts[i] > 0;
+        // csmIsInvertedMask = 1 << 3 in the Cubism Core header (no named
+        // constant in our bindings): inverted → visible INSIDE mask shape.
+        let inverted = const_flags[i] & 8 != 0;
+        let show = opacities[i] >= OPACITY_EPSILON && dyn_flags[i] & 1 != 0;
+        if let Some(mut mat) = materials.get_mut(mat_h) {
+            mat.uniforms.flags = Vec4::new(
+                opacities[i],
+                if masked { 1.0 } else { 0.0 },
+                0.0,
+                if inverted { 1.0 } else { 0.0 },
+            );
+            mat.uniforms.multiply_color =
+                read_vec4(std::ptr::from_ref(&multiply[i]) as *const f32);
+            mat.uniforms.screen_color = read_vec4(std::ptr::from_ref(&screen[i]) as *const f32);
         }
-        let want_z = frame.orders[*i] as f32;
-        if let Some(mut t) = ent.get_mut::<Transform>() {
-            if t.translation.z != want_z {
-                t.translation.z = want_z;
+
+        if let Ok((_, vis, mut tf)) = slot_entities.get_mut(entity) {
+            let cur_visible = vis.as_ref().map(|v| **v != Visibility::Hidden).unwrap_or(true);
+            if show != cur_visible {
+                let target = if show { Visibility::Visible } else { Visibility::Hidden };
+                match vis {
+                    Some(mut v) => *v = target,
+                    None => {
+                        commands.entity(entity).insert(target);
+                    }
+                }
+            }
+            let want_z = orders[i] as f32;
+            if tf.translation.z != want_z {
+                tf.translation.z = want_z;
             }
         }
     }
@@ -925,3 +915,17 @@ pub fn spawn_head_display(
 
 #[derive(Component)]
 pub struct HeadDisplay;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bevy::ecs::schedule::Schedule;
+
+    #[test]
+    fn pet_render_chain_inits_without_conflicts() {
+        let mut world = World::new();
+        let mut schedule = Schedule::default();
+        schedule.add_systems((tick_pet, refit_pet_view, sync_live2d));
+        schedule.initialize(&mut world);
+    }
+}

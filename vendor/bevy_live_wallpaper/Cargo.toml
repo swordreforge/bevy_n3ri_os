@@ -30,7 +30,6 @@ autotests = false
 autobenches = false
 description = "A Bevy plugin to create live wallpapers."
 documentation = "https://docs.rs/bevy_live_wallpaper"
-readme = "README.md"
 keywords = [
     "bevy",
     "live-wallpaper",

@@ -778,7 +778,7 @@ fn read_vec4(ptr: *const f32) -> Vec4 {
 /// 桌面其余系统可并行执行。顶点坐标写入 mesh 属性改用 in-place `attribute_mut`，
 /// 顶点缓冲由 `Local` scratch 复用，不再每帧克隆 slots / 构造 FrameDrawData /
 /// 重建 attribute Vec。
-pub fn sync_live2d(
+pub(crate) fn sync_live2d(
     pet: NonSend<Live2dPet>,
     rig: Res<Live2dRenderRig>,
     mapping: Res<PetMapping>,

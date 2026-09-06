@@ -4,6 +4,9 @@
 //! X11, and Windows. Pick the matching backend feature (`wayland` or `x11`) on
 //! Linux/BSD; Windows works with defaults.
 
+// wgpu 深嵌套类型 auto-trait（Send/Sync）求值触发 rustc 递归上限（vendored）。
+#![recursion_limit = "512"]
+
 #[cfg(all(
     not(feature = "wayland"),
     not(feature = "x11"),

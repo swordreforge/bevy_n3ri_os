@@ -1,3 +1,8 @@
+// wgpu 深嵌套类型的 auto-trait（Send/Sync）求值会触发 rustc 递归上限：
+// 提高 crate 递归深度，否则 1.100 起 `recursion_depth_exceeding_limit`
+// 会从 warning 变成 hard error。
+#![recursion_limit = "512"]
+
 use bevy::prelude::*;
 use bevy_woff::WoffPlugin;
 

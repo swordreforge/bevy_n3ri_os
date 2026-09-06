@@ -5,6 +5,10 @@
 //! renders it into an offscreen texture, and displays that texture as a
 //! centered UI node one layer below app windows.
 
+// wgpu 深嵌套类型 auto-trait（Send/Sync）求值触发 rustc 递归上限：
+// 见 n3ri-ui 同款注释（`recursion_depth_exceeding_limit` 1.100 起转 hard error）。
+#![recursion_limit = "512"]
+
 pub mod head_anim;
 pub mod loader;
 pub mod pet;

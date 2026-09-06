@@ -1120,6 +1120,6 @@ mod tests {
             terminal_selection,
             terminal_render_lines,
         ));
-        schedule.initialize(&mut world);
+        schedule.initialize(&mut world).unwrap();
     }
 }

@@ -267,6 +267,7 @@ pub fn spawn_window_with_options(
         .id()
 }
 
+#[allow(clippy::type_complexity)]
 fn window_focus_system(
     mouse: Res<ButtonInput<MouseButton>>,
     cursor: Res<CursorPosition>,

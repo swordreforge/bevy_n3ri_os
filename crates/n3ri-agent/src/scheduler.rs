@@ -477,8 +477,10 @@ mod tests {
         let mut c = cfg();
         c.daily_quota = 1.0;
         let s = snap();
-        let mut st = SchedulerState::default();
-        st.weight_sum = 1.0;
+        let st = SchedulerState {
+            weight_sum: 1.0,
+            ..Default::default()
+        };
         assert_eq!(
             gate(HookKind::Idle, "r", &s, &st, &c, true, false, false, 99999.0),
             GateResult::Drop(DropReason::Quota)
@@ -536,15 +538,19 @@ mod tests {
     fn startup_gap_and_burst() {
         let c = cfg();
         let s = snap();
-        let mut st = SchedulerState::default();
-        st.last_session_at = 1000.0;
-        st.last_startup_greeting = 0.0;
+        let mut st = SchedulerState {
+            last_session_at: 1000.0,
+            last_startup_greeting: 0.0,
+            ..Default::default()
+        };
         let f = scan_triggers(&s, &mut st, &c, 1000.0 + STARTUP_GAP_SECS, 12, true);
         assert!(matches!(f, Some(f) if f.kind == HookKind::Startup));
 
-        let mut st = SchedulerState::default();
-        st.last_session_at = 1000.0;
-        st.last_startup_greeting = 1000.0 + STARTUP_GAP_SECS;
+        let mut st = SchedulerState {
+            last_session_at: 1000.0,
+            last_startup_greeting: 1000.0 + STARTUP_GAP_SECS,
+            ..Default::default()
+        };
         let f = scan_triggers(&s, &mut st, &c, 1000.0 + STARTUP_GAP_SECS + 10.0, 12, true);
         assert!(f.map(|f| f.kind) != Some(HookKind::Startup));
     }

@@ -107,9 +107,7 @@ pub fn classify_activity(
     dwell_secs: f32,
     engaged: bool,
 ) -> Activity {
-    if immersive {
-        Activity::Immersive
-    } else if focused_app_id == "browser" && dwell_secs >= BROWSER_IMMERSIVE_DWELL_SECS {
+    if immersive || (focused_app_id == "browser" && dwell_secs >= BROWSER_IMMERSIVE_DWELL_SECS) {
         Activity::Immersive
     } else if dwell_secs >= FOCUSED_WORK_DWELL_SECS && engaged {
         Activity::FocusedWork

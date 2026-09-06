@@ -244,9 +244,9 @@ impl Position {
     }
 
     fn find_king(&self, color: ChessColor) -> Option<Sq> {
-        for r in 0..8 {
-            for c in 0..8 {
-                if self.board[r][c] == Some(Piece {
+        for (r, row) in self.board.iter().enumerate() {
+            for (c, cell) in row.iter().enumerate() {
+                if *cell == Some(Piece {
                     kind: PieceKind::King,
                     color,
                 }) {
@@ -893,6 +893,7 @@ impl Plugin for InternationalChessPlugin {
 // ============================
 //  点击处理
 // ============================
+#[allow(clippy::type_complexity)]
 fn chess_clicks(
     mouse: Res<ButtonInput<MouseButton>>,
     mut game: ResMut<ChessGame>,
@@ -1297,6 +1298,7 @@ fn build_san(
 // ============================
 //  UI 同步
 // ============================
+#[allow(clippy::type_complexity)]
 fn chess_sync(
     game: Res<ChessGame>,
     assets: Res<ChessAssets>,
@@ -1344,9 +1346,8 @@ fn chess_sync(
     >,
 ) {
     // —— 棋盘格 ——
-    for r in 0..8 {
-        for c in 0..8 {
-            let e = ents.squares[r][c];
+    for (r, square_row) in ents.squares.iter().enumerate() {
+        for (c, e) in square_row.iter().enumerate() {
             let sq = Sq::new(r as i32, c as i32);
             let piece = game.pos.piece_at(sq);
             let is_light = (r + c) % 2 == 0;
@@ -1661,8 +1662,8 @@ pub fn spawn_international_chess(
                                         ..default()
                                     })
                                     .with_children(|board| {
-                                        for r in 0..8 {
-                                            for c in 0..8 {
+                                        for (r, square_row) in ents.squares.iter_mut().enumerate() {
+                                            for (c, cell) in square_row.iter_mut().enumerate() {
                                                 let is_light = (r + c) % 2 == 0;
                                                 let bg = if is_light { LIGHT_SQ } else { DARK_SQ };
                                                 let sq = Sq::new(r as i32, c as i32);
@@ -1761,7 +1762,7 @@ pub fn spawn_international_chess(
                                                             .id();
                                                     },
                                                 );
-                                                ents.squares[r][c] = SquareEnts {
+                                                *cell = SquareEnts {
                                                     sq: sq_e,
                                                     piece: piece_e,
                                                     dot: dot_e,
@@ -2335,7 +2336,7 @@ mod tests {
         let mut total = 0;
         for r in 0..8 {
             for c in 0..8 {
-                let sq = Sq::new(r as i32, c as i32);
+                let sq = Sq::new(r, c);
                 if let Some(p) = pos.piece_at(sq) {
                     if p.color == pos.turn {
                         total += pos.legal_moves(sq).len();
@@ -2488,10 +2489,8 @@ mod tests {
         // 标准角杀：黑王 h8=(0,7)，白后 g7=(1,6) 将军并封锁 g8/h7，
         // 白王 g6=(2,6) 保护后，黑王无处可逃 → 将死
         let mut pos = Position::initial();
-        for r in 0..8 {
-            for c in 0..8 {
-                pos.board[r][c] = None;
-            }
+        for row in &mut pos.board {
+            row.fill(None);
         }
         pos.board[0][7] = Some(Piece {
             kind: PieceKind::King,
@@ -2516,9 +2515,9 @@ mod tests {
     fn knight_has_eight_jumps_from_center() {
         let mut pos = Position::initial();
         // 清空中心 5x5（行2-6 列2-6），马在 d4=(4,4) 可达全部 8 格
-        for r in 2..7 {
-            for c in 2..7 {
-                pos.board[r][c] = None;
+        for row in &mut pos.board[2..7] {
+            for cell in &mut row[2..7] {
+                *cell = None;
             }
         }
         pos.board[4][4] = Some(Piece {

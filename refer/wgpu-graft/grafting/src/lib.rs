@@ -83,6 +83,12 @@ pub use dx12_shared_texture::{import_dx12_shared_handle_borrowed, import_dx12_sh
 ))]
 mod gl_bindings {
     #![allow(unsafe_op_in_unsafe_fn)]
+    #![allow(
+        clippy::unused_unit,
+        clippy::missing_transmute_annotations,
+        clippy::upper_case_acronyms,
+        clippy::too_many_arguments
+    )]
 
     include!(concat!(env!("OUT_DIR"), "/gl_bindings.rs"));
 }
@@ -1056,14 +1062,14 @@ fn import_vulkan_external_image(
     {
         let metadata = frame.metadata();
         let texture = vulkan_dmabuf::import_vulkan_external_image(frame, host)?;
-        return Ok(ImportedTexture {
+        Ok(ImportedTexture {
             texture,
             format: metadata.format,
             size: metadata.size,
             origin: TextureOrigin::TopLeft,
             generation: metadata.generation,
             consumer_sync: metadata.producer_sync,
-        });
+        })
     }
 
     #[cfg(not(target_os = "linux"))]

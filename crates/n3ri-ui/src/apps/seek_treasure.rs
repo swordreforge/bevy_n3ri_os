@@ -609,11 +609,10 @@ fn load_word_bank() -> Vec<String> {
 /// AI 视角的棋盘序列化:显示【人类】的道具布局(AI 的"对方布局图")
 fn serialize_board(game: &SeekGame) -> String {
     let mut out = String::new();
-    for i in 0..BOARD {
+    for (i, cell) in game.grid.iter().enumerate() {
         if i % GRID_SIDE == 0 {
             out.push('\n');
         }
-        let cell = &game.grid[i];
         let rev = if cell.revealed { "(已翻开)" } else { "" };
         out.push_str(&format!(
             "{}:{}={}{}",
@@ -2280,8 +2279,8 @@ mod tests {
         let human = side_layout(&[0, 1, 2, 3, 4, 5, 6, 7, 8], &[9, 10, 11]);
         let ai = side_layout(&[0, 1, 2, 3, 4, 5, 6, 7, 8], &[12, 13, 14]);
         let mut game = test_game(human, ai);
-        for i in 9..BOARD {
-            game.grid[i].revealed = true;
+        for cell in game.grid.iter_mut().skip(9) {
+            cell.revealed = true;
         }
         game.human_left = 1;
         game.ai_left = 1;

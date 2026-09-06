@@ -230,10 +230,12 @@ mod tests {
     #[test]
     fn block_contains_sections() {
         let v = view();
-        let mut snap = ContextSnapshot::default();
-        snap.focus_dwell = ("terminal".into(), 720.0);
-        snap.presence = Presence::Active;
-        snap.activity = Activity::FocusedWork;
+        let snap = ContextSnapshot {
+            focus_dwell: ("terminal".into(), 720.0),
+            presence: Presence::Active,
+            activity: Activity::FocusedWork,
+            ..Default::default()
+        };
         let b = build_context_block(&v, &snap);
         assert!(b.starts_with("<context>"));
         assert!(b.ends_with("</context>"));

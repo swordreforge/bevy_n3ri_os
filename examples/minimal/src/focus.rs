@@ -80,6 +80,7 @@ impl FocusState {
 }
 
 /// 1. 触发/退出：新增游戏窗口 → 进入凑近；目标窗口 despawn → 开始退出
+#[allow(clippy::type_complexity)]
 fn focus_watch(
     mut commands: Commands,
     mut state: ResMut<FocusState>,
@@ -194,6 +195,7 @@ fn belongs_to_window(
 
 /// 2. 每帧动画：progress 0→1 进入，1→0 退出；应用窗口重排、人物节点、背景推镜
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::type_complexity)]
 fn focus_animate(
     time: Res<Time>,
     mut state: ResMut<FocusState>,

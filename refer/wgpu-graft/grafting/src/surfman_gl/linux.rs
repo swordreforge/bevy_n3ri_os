@@ -26,7 +26,7 @@ pub(super) fn import_current_frame(
         .ok_or(InteropError::InvalidFrame("no surfman surface available"))?;
 
     device
-        .make_context_current(&mut context)
+        .make_context_current(&context)
         .map_err(|err| InteropError::Surfman(format!("{err:?}")))?;
 
     let surface_info = device.surface_info(&surface);

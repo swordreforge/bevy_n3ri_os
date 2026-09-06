@@ -3,6 +3,7 @@
 //! 双向绘画游戏：
 //! - 偶数回合：玩家画 → Nori 猜（2.0s 首猜，之后 2.8s 一次，12% 概率猜对）
 //! - 奇数回合：Nori 画（drawings.json 笔画重放，150ms/笔）→ 玩家猜（文本输入）
+//!
 //! 页面流程：主菜单 → 时长选择 → 游戏 → 结算
 
 use bevy::asset::RenderAssetUsages;
@@ -893,8 +894,7 @@ fn spawn_game_page(parent: &mut ChildSpawnerCommands, fonts: &N3riFonts) {
                 ..default()
             })
             .with_children(|bar| {
-                for i in 0..6 {
-                    let [r, g, b, _] = PALETTE[i];
+                for (i, &[r, g, b, _]) in PALETTE.iter().enumerate() {
                     bar.spawn((
                         Button,
                         PicColorBtn(i),
@@ -1921,6 +1921,7 @@ mod tests {
         assert!(expected_chat >= 2, "开始游戏应至少有加载与出题两条消息");
 
         // 运行聊天重建系统
+        #[allow(clippy::type_complexity)]
         let mut state: SystemState<(
             ResMut<PictionaryGame>,
             Commands,
@@ -1946,6 +1947,7 @@ mod tests {
             end_game(&mut game);
             assert!(game.result_dirty);
         }
+        #[allow(clippy::type_complexity)]
         let mut state: SystemState<(
             ResMut<PictionaryGame>,
             Commands,

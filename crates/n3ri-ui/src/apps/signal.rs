@@ -222,7 +222,7 @@ fn load_sessions() -> Vec<ChatSession> {
         }
     }
 
-    sessions.sort_by(|a, b| date_key(&b.date).cmp(&date_key(&a.date)));
+    sessions.sort_by_key(|s| std::cmp::Reverse(date_key(&s.date)));
     sessions
 }
 

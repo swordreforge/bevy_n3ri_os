@@ -6,7 +6,7 @@ use crate::window::spawn_window_with_options;
 use std::path::Path;
 
 const NORI_BG: Color = Color::srgb(0.655, 0.835, 0.867);   // RGB(167,213,221)
-const ADMIN_BG: Color = Color::srgb(0.247, 0.318, 0.396);  // RGB(63,81,101)
+const ADMIN_BG: Color = Color::srgb(0.247, 0.3176, 0.396); // RGB(63,81,101)
 const POEM_BG: Color = Color::srgba(0.15, 0.18, 0.25, 0.6); // 诗句背景
 const TEXT_DARK: Color = Color::srgb(0.1, 0.12, 0.15);
 const TEXT_LIGHT: Color = Color::srgb(0.9, 0.95, 0.95);

@@ -151,8 +151,8 @@ fn bgra_dmabuf_clear_roundtrip() {
 }
 
 fn assert_all_pixels(pixels: &[u8], expected: [u8; 4]) {
-    for (index, actual) in pixels.chunks_exact(4).enumerate() {
-        assert_eq!(actual, expected, "pixel {index} mismatch");
+    for (index, actual) in pixels.as_chunks::<4>().0.iter().enumerate() {
+        assert_eq!(actual, &expected, "pixel {index} mismatch");
     }
 }
 
@@ -165,7 +165,6 @@ fn setup_vulkan_host() -> HostWgpuContext {
             power_preference: wgpu::PowerPreference::HighPerformance,
             force_fallback_adapter: false,
             compatible_surface: None,
-            ..Default::default()
         })
         .block_on()
         .expect("no Vulkan adapter available");

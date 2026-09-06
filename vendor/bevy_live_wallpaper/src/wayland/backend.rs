@@ -94,6 +94,7 @@ impl Plugin for WaylandBackendPlugin {
 #[derive(Resource, Deref, DerefMut)]
 struct WaylandEventQueue(EventQueue<WaylandAppState>);
 
+#[allow(clippy::too_many_arguments)]
 fn wayland_event_system(
     mut event_queue: NonSendMut<WaylandEventQueue>,
     mut app_state: NonSendMut<WaylandAppState>,

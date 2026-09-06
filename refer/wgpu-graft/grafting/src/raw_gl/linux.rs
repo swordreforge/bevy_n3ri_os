@@ -118,7 +118,7 @@ pub fn import_gl_framebuffer_vulkan(
             .map_err(|err| InteropError::Vulkan(err.to_string()))?;
 
         let external_memory_fd_api =
-            ash::khr::external_memory_fd::Device::new(&vulkan_instance, &vulkan_device);
+            ash::khr::external_memory_fd::Device::new(vulkan_instance, &vulkan_device);
         let memory_handle = external_memory_fd_api
             .get_memory_fd(
                 &vk::MemoryGetFdInfoKHR::default()
@@ -127,7 +127,7 @@ pub fn import_gl_framebuffer_vulkan(
             )
             .map_err(|err| InteropError::Vulkan(err.to_string()))?;
 
-        let gl_with_extensions = Gl::load_with(|function_name| gl_extension_loader(function_name));
+        let gl_with_extensions = Gl::load_with(gl_extension_loader);
 
         if !gl_with_extensions.CreateMemoryObjectsEXT.is_loaded()
             || !gl_with_extensions.ImportMemoryFdEXT.is_loaded()

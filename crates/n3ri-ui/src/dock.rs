@@ -309,6 +309,7 @@ fn dock_magnification(
     }
 }
 
+#[allow(clippy::type_complexity)]
 fn dock_update(
     mouse: Res<ButtonInput<MouseButton>>,
     icon_query: Query<(Entity, &DockIcon, &Interaction, &Children)>,
@@ -505,6 +506,6 @@ mod tests {
         let mut world = World::new();
         let mut schedule = Schedule::default();
         schedule.add_systems((dock_magnification, dock_update, dock_tooltip));
-        schedule.initialize(&mut world);
+        schedule.initialize(&mut world).unwrap();
     }
 }

@@ -17,16 +17,9 @@ use config::{OsConfig, ThemeConfig, UserSettings};
 use music::{MusicLibrary, MusicStatus};
 use state::{DesktopState, OsState};
 
+#[derive(Default)]
 pub struct N3riCorePlugin {
     pub config: OsConfig,
-}
-
-impl Default for N3riCorePlugin {
-    fn default() -> Self {
-        Self {
-            config: OsConfig::default(),
-        }
-    }
 }
 
 impl Plugin for N3riCorePlugin {

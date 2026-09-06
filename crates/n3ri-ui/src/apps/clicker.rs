@@ -474,12 +474,12 @@ fn buy_source(game: &mut ClickerGame, idx: usize) {
             let mut bought = false;
             loop {
                 let mut best: Option<(usize, f64)> = None;
-                for i in 0..10 {
+                for (i, (_, per_level, _)) in SOURCE_DEFS.iter().enumerate() {
                     let cost = game.source_cost(i);
                     if !cost.is_finite() || game.money < cost {
                         continue;
                     }
-                    let ratio = SOURCE_DEFS[i].1 * game.multiplier() / cost;
+                    let ratio = per_level * game.multiplier() / cost;
                     if best.is_none_or(|(_, r)| ratio > r) {
                         best = Some((i, ratio));
                     }
@@ -529,6 +529,7 @@ fn buy_source(game: &mut ClickerGame, idx: usize) {
     }
 }
 
+#[allow(clippy::type_complexity)]
 fn clicker_ui_update(
     game: Res<ClickerGame>,
     mut texts: Query<(&ClickerText, &mut Text)>,
@@ -733,7 +734,7 @@ pub fn spawn_clicker(parent: &mut ChildSpawnerCommands, asset_server: &AssetServ
                                 ..default()
                             })
                             .with_children(|grid| {
-                                for i in 0..13usize {
+                                for (i, handle) in memento_handles.iter().enumerate() {
                                     grid.spawn((
                                         MementoCell(i),
                                         Button,
@@ -748,7 +749,7 @@ pub fn spawn_clicker(parent: &mut ChildSpawnerCommands, asset_server: &AssetServ
                                     .with_children(|cell| {
                                         cell.spawn((
                                             ImageNode {
-                                                image: memento_handles[i].clone(),
+                                                image: handle.clone(),
                                                 color: Color::srgba(0.25, 0.32, 0.38, 0.35),
                                                 ..default()
                                             },

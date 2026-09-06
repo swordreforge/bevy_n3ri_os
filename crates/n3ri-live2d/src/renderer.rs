@@ -297,17 +297,11 @@ pub(crate) struct Live2dRenderRig {
 #[derive(Resource, Default)]
 pub struct PetDisplayImage(pub Option<Handle<Image>>);
 
-#[derive(Resource, Clone)]
+#[derive(Resource, Clone, Default)]
 pub struct PetHeadImage(pub Option<Handle<Image>>);
 
 #[derive(Component)]
 pub struct PetDisplayNode;
-
-impl Default for PetHeadImage {
-    fn default() -> Self {
-        Self(None)
-    }
-}
 
 // ── setup (exclusive Startup system) ──
 
@@ -531,7 +525,7 @@ pub fn load_and_setup_pet(world: &mut World) {
     }
 
     let mut group_rtts: Vec<Handle<Image>> = Vec::with_capacity(num_groups);
-    for g in 0..num_groups {
+    for (g, sources) in group_sources.iter().enumerate() {
         let rtt_h = world
             .resource_mut::<Assets<Image>>()
             .add(Image::new_target_texture(
@@ -562,8 +556,8 @@ pub fn load_and_setup_pet(world: &mut World) {
             ))
             .id();
 
-        let mut mask_entities = Vec::with_capacity(group_sources[g].len());
-        for &src_idx in &group_sources[g] {
+        let mut mask_entities = Vec::with_capacity(sources.len());
+        for &src_idx in sources {
             // Cubism masks sample their own texture alpha — never share one
             // flat-fill material across mask sources.
             let src_tex = texture_handles
@@ -595,7 +589,7 @@ pub fn load_and_setup_pet(world: &mut World) {
         }
 
         mask_groups.push(MaskGroup {
-            mask_source_indices: group_sources[g].clone(),
+            mask_source_indices: sources.clone(),
             _layer: layer,
             _camera_entity: cam,
             _mask_entities: mask_entities,
@@ -671,6 +665,7 @@ fn rt_resize(img: &mut Image, w: u32, h: u32) {
 /// 本系统**不**随宠物可见性门控：启动/加载阶段也持续收敛，确保宠物首次挂载时
 /// RTT/映射已就绪（否则防抖窗口会落到宠物出现头几帧，造成错误缩放瞬态）。
 /// 显示节点由二进制侧按逻辑区域连续跟随（零成本，见 examples/minimal sync_pet_display_node）。
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn refit_pet_view(
     target: Res<PetTargetArea>,
     mut view: ResMut<PetViewSize>,
@@ -778,6 +773,7 @@ fn read_vec4(ptr: *const f32) -> Vec4 {
 /// 桌面其余系统可并行执行。顶点坐标写入 mesh 属性改用 in-place `attribute_mut`，
 /// 顶点缓冲由 `Local` scratch 复用，不再每帧克隆 slots / 构造 FrameDrawData /
 /// 重建 attribute Vec。
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn sync_live2d(
     pet: NonSend<Live2dPet>,
     rig: Res<Live2dRenderRig>,
@@ -935,6 +931,6 @@ mod tests {
         let mut world = World::new();
         let mut schedule = Schedule::default();
         schedule.add_systems((tick_pet, refit_pet_view, sync_live2d));
-        schedule.initialize(&mut world);
+        schedule.initialize(&mut world).unwrap();
     }
 }

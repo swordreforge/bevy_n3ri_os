@@ -243,6 +243,7 @@ pub fn check_idle_timeout(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn detect_petting(
     windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
     display: Query<(&ComputedNode, &UiGlobalTransform), With<crate::renderer::PetDisplayNode>>,

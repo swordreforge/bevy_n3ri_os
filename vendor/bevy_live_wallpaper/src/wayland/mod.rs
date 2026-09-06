@@ -980,16 +980,13 @@ impl Dispatch<wp_fractional_scale_v1::WpFractionalScaleV1, u32> for WaylandAppSt
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
     ) {
-        match event {
-            wp_fractional_scale_v1::Event::PreferredScale { scale } => {
-                info!(
-                    "Output {} fractional preferred scale: {} ({}x)",
-                    output_name, scale, scale as f32 / 120.0
-                );
-                state.output_fractional_scale.insert(*output_name, scale);
-                state.dirty_outputs.insert(*output_name);
-            }
-            _ => {}
+        if let wp_fractional_scale_v1::Event::PreferredScale { scale } = event {
+            info!(
+                "Output {} fractional preferred scale: {} ({}x)",
+                output_name, scale, scale as f32 / 120.0
+            );
+            state.output_fractional_scale.insert(*output_name, scale);
+            state.dirty_outputs.insert(*output_name);
         }
     }
 }

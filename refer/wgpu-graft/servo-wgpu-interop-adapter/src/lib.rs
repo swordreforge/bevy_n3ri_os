@@ -140,10 +140,10 @@ impl ServoWgpuRenderingContext {
             return;
         }
         self.frame_producer.borrow().set_size(size);
-        let mut device = surfman_rendering_info.device.borrow_mut();
+        let device = surfman_rendering_info.device.borrow_mut();
         let mut context = surfman_rendering_info.context.borrow_mut();
         let size = euclid::default::Size2D::new(size.width as i32, size.height as i32);
-        let _ = self.swap_chain.resize(&mut *device, &mut *context, size);
+        let _ = self.swap_chain.resize(&*device, &mut *context, size);
     }
 
     /// Read the full current frame as a CPU-side RGBA image.
@@ -190,10 +190,10 @@ impl RenderingContext for ServoWgpuRenderingContext {
 
         self.frame_producer.borrow().set_size(size);
 
-        let mut device = surfman_rendering_info.device.borrow_mut();
+        let device = surfman_rendering_info.device.borrow_mut();
         let mut context = surfman_rendering_info.context.borrow_mut();
         let size = Size2D::new(size.width as i32, size.height as i32);
-        let _ = self.swap_chain.resize(&mut *device, &mut *context, size);
+        let _ = self.swap_chain.resize(&*device, &mut *context, size);
     }
 
     fn present(&self) {
@@ -206,10 +206,10 @@ impl RenderingContext for ServoWgpuRenderingContext {
         // unaffected — `glReadPixels` reads the FBO directly and blocks itself.
         let info = self.frame_producer.borrow().context();
         {
-            let mut device = info.device.borrow_mut();
+            let device = info.device.borrow_mut();
             let mut context = info.context.borrow_mut();
             let _ = self.swap_chain.swap_buffers(
-                &mut *device,
+                &*device,
                 &mut *context,
                 PreserveBuffer::Yes(&info.glow_gl),
             );

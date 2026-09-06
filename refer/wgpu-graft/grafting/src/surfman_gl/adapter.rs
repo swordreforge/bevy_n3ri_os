@@ -52,9 +52,9 @@ pub fn select_adapter_matching_surfman_luid(
     {
         // No LUID concept on Linux/macOS; the surfman default adapter is fine.
         let _ = wgpu_device;
-        return connection
+        connection
             .create_adapter()
-            .map_err(|err| InteropError::Surfman(format!("create_adapter failed: {err:?}")));
+            .map_err(|err| InteropError::Surfman(format!("create_adapter failed: {err:?}")))
     }
 
     #[cfg(target_os = "windows")]

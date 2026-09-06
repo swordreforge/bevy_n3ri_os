@@ -449,10 +449,12 @@ mod tests {
     #[test]
     fn scroll_layer_clamps_and_bubbles_remainder() {
         // Given: 内容 1000px / 视口 400px @ scale 1 → max_logical = 600
-        let mut node = ComputedNode::default();
-        node.content_size = Vec2::new(200.0, 1000.0);
-        node.size = Vec2::new(200.0, 400.0);
-        node.inverse_scale_factor = 1.0;
+        let node = ComputedNode {
+            content_size: Vec2::new(200.0, 1000.0),
+            size: Vec2::new(200.0, 400.0),
+            inverse_scale_factor: 1.0,
+            ..Default::default()
+        };
         let mut pos = ScrollPosition(Vec2::ZERO);
 
         // When: 向下滚 100（delta = -100，滚向末尾）
@@ -466,10 +468,12 @@ mod tests {
     #[test]
     fn scroll_layer_boundary_keeps_remainder_for_parent() {
         // Given: 内容 600 / 视口 400 → max = 200，当前已在底部
-        let mut node = ComputedNode::default();
-        node.content_size = Vec2::new(200.0, 600.0);
-        node.size = Vec2::new(200.0, 400.0);
-        node.inverse_scale_factor = 1.0;
+        let node = ComputedNode {
+            content_size: Vec2::new(200.0, 600.0),
+            size: Vec2::new(200.0, 400.0),
+            inverse_scale_factor: 1.0,
+            ..Default::default()
+        };
         let mut pos = ScrollPosition(Vec2::new(0.0, 200.0));
 
         // When: 继续向下滚 100（-100 已过界）
@@ -483,10 +487,12 @@ mod tests {
     #[test]
     fn scroll_layer_respects_scale_factor() {
         // Given: 内容 1000 / 视口 400 物理像素 @ scale 2 → max_logical = 300
-        let mut node = ComputedNode::default();
-        node.content_size = Vec2::new(400.0, 1000.0);
-        node.size = Vec2::new(400.0, 400.0);
-        node.inverse_scale_factor = 0.5;
+        let node = ComputedNode {
+            content_size: Vec2::new(400.0, 1000.0),
+            size: Vec2::new(400.0, 400.0),
+            inverse_scale_factor: 0.5,
+            ..Default::default()
+        };
         let mut pos = ScrollPosition(Vec2::ZERO);
 
         // When: 逻辑像素位移 -300（滚向末尾）

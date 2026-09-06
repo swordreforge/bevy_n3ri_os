@@ -78,6 +78,7 @@ pub struct ChatRise(pub f32);
 #[derive(Default)]
 pub(crate) struct ChatLlmState {
     pub pending: bool,
+    #[allow(clippy::type_complexity)]
     rx: Option<Mutex<Receiver<(Result<String, String>, String, Vec<n3ri_agent::PendingEffect>)>>>,
     system_prompt: Option<String>,
 }
@@ -343,6 +344,7 @@ fn chat_capsule_interact(
     }
 }
 
+#[allow(clippy::type_complexity)]
 fn chat_capsule_animate(
     time: Res<Time>,
     state: Res<ChatCapsuleState>,

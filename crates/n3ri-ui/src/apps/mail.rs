@@ -190,7 +190,7 @@ fn read_folder(folder: usize) -> Vec<MailEntry> {
         }
         out.push(MailEntry { mail, lines });
     }
-    out.sort_by(|a, b| date_key(&b.mail.date).cmp(&date_key(&a.mail.date)));
+    out.sort_by_key(|m| std::cmp::Reverse(date_key(&m.mail.date)));
     out
 }
 

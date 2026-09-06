@@ -29,7 +29,7 @@ fn main() {
     let const_flags = d.constant_flags();
     let mask_counts = d.mask_counts();
     let masks = d.masks();
-    let blend_modes = d.blend_modes();
+    let _blend_modes = d.blend_modes();
     let opacities = d.opacities();
     let render_orders = model.render_orders();
     let tex_idx = d.texture_indices();

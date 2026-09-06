@@ -668,6 +668,8 @@ fn rt_resize(img: &mut Image, w: u32, h: u32) {
 /// 显示节点。窗口模式（niri 扩窗）与壁纸模式（surface 配置就绪）都由此收敛到真实区域。
 /// RTT 尺寸变化（增/减）都经 0.5s 防抖后整套重建（图像/相机/映射/材质一次到位），
 /// 防抖避免拖拽/改档过程中的逐帧重建；尺寸不变时零开销。
+/// 本系统**不**随宠物可见性门控：启动/加载阶段也持续收敛，确保宠物首次挂载时
+/// RTT/映射已就绪（否则防抖窗口会落到宠物出现头几帧，造成错误缩放瞬态）。
 /// 显示节点由二进制侧按逻辑区域连续跟随（零成本，见 examples/minimal sync_pet_display_node）。
 pub(crate) fn refit_pet_view(
     target: Res<PetTargetArea>,
@@ -681,6 +683,7 @@ pub(crate) fn refit_pet_view(
     mut cameras: Query<(&mut Transform, &mut Projection)>,
     time: Res<Time>,
     mut grow_timer: Local<f32>,
+    mut applied_once: Local<bool>,
 ) {
     let Some(rig) = rig else {
         return;
@@ -701,11 +704,17 @@ pub(crate) fn refit_pet_view(
         return;
     }
 
+    // 首次收敛（加载后 target 第一次可用）跳过防抖立即应用，避免宠物刚出现时
+    // 顶着 Startup 期的初始映射渲染几帧；此后增/减仍按 0.5s 防抖重建。
+    if !*applied_once {
+        *grow_timer = GROW_DEBOUNCE_SECS;
+    }
     *grow_timer += time.delta_secs();
     if *grow_timer < GROW_DEBOUNCE_SECS {
         return;
     }
     *grow_timer = 0.0;
+    *applied_once = true;
 
     if let Some(mut img) = images.get_mut(&rig.pet_image) {
         rt_resize(&mut img, w, h);

@@ -59,7 +59,7 @@ impl Plugin for N3riLive2dPlugin {
                 Update,
                 (
                     renderer::tick_pet.run_if(renderer::pet_display_on),
-                    renderer::refit_pet_view.run_if(renderer::pet_display_on),
+                    renderer::refit_pet_view,
                     renderer::sync_live2d.run_if(renderer::pet_display_on),
                 )
                     .chain(),

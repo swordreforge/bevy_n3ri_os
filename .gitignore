@@ -2,6 +2,7 @@
 *.swp
 *.swo
 *~
+*.txt
 .DS_Store
 .omo/
 backup/
@@ -10,3 +11,4 @@ assets_dev/
 /panic.txt
 .commandcode/
 reference/
+

@@ -41,6 +41,17 @@ use crate::pet::Live2dPet;
 
 // ── constants ──
 
+/// RTT 相机 MSAA：pet/head/mask 都是逐帧全屏重画，4x 在低端 GPU 上是主要开销。
+/// 临时性能调优：默认 Off（1 sample），可用 `N3RI_MSAA=2|4|8` 覆盖回抗锯齿做 A/B。
+fn rtt_msaa() -> Msaa {
+    match std::env::var("N3RI_MSAA").ok().as_deref() {
+        Some("2") => Msaa::Sample2,
+        Some("4") => Msaa::Sample4,
+        Some("8") => Msaa::Sample8,
+        _ => Msaa::Off,
+    }
+}
+
 const DRAW_LAYER: usize = 1;
 const FIT_MARGIN_X: f32 = 0.92;
 const FIT_MARGIN_Y: f32 = 0.94;
@@ -370,7 +381,7 @@ pub fn load_and_setup_pet(world: &mut World) {
             ..default()
         },
         RenderTarget::Image(pet_image_h.clone().into()),
-        Msaa::Sample4,
+        rtt_msaa(),
         RenderLayers::layer(DRAW_LAYER),
         Transform::from_xyz(view_w as f32 * 0.5, view_h as f32 * 0.5, 1000.0),
     )).id();
@@ -398,7 +409,7 @@ pub fn load_and_setup_pet(world: &mut World) {
             ..default()
         },
         RenderTarget::Image(head_image_h.clone().into()),
-        Msaa::Sample4,
+        rtt_msaa(),
         RenderLayers::layer(DRAW_LAYER),
         Transform::from_xyz(
             view_w as f32 * 0.5,
@@ -550,7 +561,7 @@ pub fn load_and_setup_pet(world: &mut World) {
                     ..default()
                 },
                 RenderTarget::Image(rtt_h.clone().into()),
-                Msaa::Sample4,
+                rtt_msaa(),
                 RenderLayers::layer(layer),
                 Transform::from_xyz(view_w as f32 * 0.5, view_h as f32 * 0.5, 1000.0),
             ))

@@ -111,6 +111,11 @@ fn run_windowed() {
                 primary_window: Some(Window {
                     title: "n3ri_os".into(),
                     resolution: (1920u32, 1080u32).into(),
+                    // 关闭垂直同步：低端机上 Fifo 会把 ~30ms 的帧时间钳到 30fps、
+                    // ~50ms 钳到 20fps（按 vblank 倍数取整）；AutoNoVsync 让
+                    // 帧就绪即呈现（Immediate→Mailbox 回退），帧率跟实际帧时间走。
+                    // 不支持该模式的平台回退 Fifo，无副作用。
+                    present_mode: bevy::window::PresentMode::AutoNoVsync,
                     ..default()
                 }),
                 ..default()
@@ -125,8 +130,25 @@ fn run_windowed() {
         .add_plugins(n3ri_agent::AgentPlugin)
         .add_plugins(MusicPlayerPlugin)
         .add_plugins(n3ri_live2d::N3riLive2dPlugin)
-        .add_plugins(focus::FocusPlugin)
-        .add_systems(Startup, spawn_camera)
+        .add_plugins(focus::FocusPlugin);
+    // N3RI_PROF=1：控制台每 2s 打印进程 CPU/内存占用与真实帧率（fps/frame_time）。
+    // 注：0.19 的 SystemInformationDiagnosticsPlugin 只统计系统/进程级利用率，
+    // 并不测量单个 ECS 系统耗时——逐系统归因请用 `perf top` 或 tracy。
+    #[cfg(feature = "profiling")]
+    if std::env::var("N3RI_PROF").is_ok() {
+        use bevy::diagnostic::{
+            FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin, SystemInformationDiagnosticsPlugin,
+        };
+        app.add_plugins((
+            SystemInformationDiagnosticsPlugin,
+            FrameTimeDiagnosticsPlugin::default(),
+            LogDiagnosticsPlugin {
+                wait_duration: std::time::Duration::from_secs(2),
+                ..Default::default()
+            },
+        ));
+    }
+    app.add_systems(Startup, spawn_camera)
         .add_systems(Startup, init_pet_render_config)
         .add_systems(Update, (chat_rise_sync, chat_emotion_bridge))
         .add_systems(Update, sync_pet_render_config)
@@ -202,10 +224,22 @@ fn run_wallpaper() {
                 react_to_window_events: true,
             },
         });
-    // N3RI_PROF=1：启用逐系统 CPU 耗时诊断（性能归因用）
+    // N3RI_PROF=1：控制台每 2s 打印进程 CPU/内存占用与真实帧率（fps/frame_time）。
+    // 注：0.19 的 SystemInformationDiagnosticsPlugin 只统计系统/进程级利用率，
+    // 并不测量单个 ECS 系统耗时——逐系统归因请用 `perf top` 或 tracy。
     #[cfg(feature = "profiling")]
     if std::env::var("N3RI_PROF").is_ok() {
-        app.add_plugins(bevy::diagnostic::SystemInformationDiagnosticsPlugin);
+        use bevy::diagnostic::{
+            FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin, SystemInformationDiagnosticsPlugin,
+        };
+        app.add_plugins((
+            SystemInformationDiagnosticsPlugin,
+            FrameTimeDiagnosticsPlugin::default(),
+            LogDiagnosticsPlugin {
+                wait_duration: std::time::Duration::from_secs(2),
+                ..Default::default()
+            },
+        ));
     }
     app.add_systems(Startup, (spawn_wallpaper_camera, spawn_satellite_process))
         .add_systems(Startup, init_pet_render_config)
@@ -235,8 +269,20 @@ fn run_wallpaper() {
         .run();
 }
 
+/// 主相机（UI + 桌面背景 shader）MSAA。默认与 Bevy 一致 Sample4；设
+/// `N3RI_MSAA=0|1|2|4|8` 可统一覆盖主相机与 Live2D RTT（见 n3ri-live2d
+/// 同款环境变量），用于低端机 A/B。0/1 = Off（1 sample）。
+fn ui_msaa() -> Msaa {
+    match std::env::var("N3RI_MSAA").ok().as_deref() {
+        Some("0") | Some("1") => Msaa::Off,
+        Some("2") => Msaa::Sample2,
+        Some("8") => Msaa::Sample8,
+        _ => Msaa::Sample4,
+    }
+}
+
 fn spawn_camera(mut commands: Commands) {
-    commands.spawn(Camera2d);
+    commands.spawn((Camera2d, ui_msaa()));
 }
 
 /// 统一 UiArea → 宠物视口目标（物理像素 = 逻辑 × scale）。
@@ -258,7 +304,7 @@ fn sync_pet_target_area(
 }
 
 fn spawn_wallpaper_camera(mut commands: Commands) {
-    commands.spawn((Camera2d, LiveWallpaperCamera, IsDefaultUiCamera));
+    commands.spawn((Camera2d, LiveWallpaperCamera, IsDefaultUiCamera, ui_msaa()));
 }
 
 #[derive(Resource)]

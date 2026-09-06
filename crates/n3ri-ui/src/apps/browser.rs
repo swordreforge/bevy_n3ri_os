@@ -933,6 +933,17 @@ fn browser_page_input(
     let Some((node, tf)) = page.iter().next() else {
         return;
     };
+    // 光标未动且无任何待转发输入时本帧无事可做：跳过 content 反算与四个
+    // reader 循环（原先激活空闲帧也每帧做一次 try_inverse）。点击不移动光标
+    // 的帧由 buttons 非空放行，光标位置与上帧一致因此坐标依然准确。
+    if !cursor.is_changed()
+        && keyboard.is_empty()
+        && ime.is_empty()
+        && buttons.is_empty()
+        && wheels.is_empty()
+    {
+        return;
+    }
     let content = page_device_point(node, tf, &cursor);
 
     for ev in keyboard.read() {

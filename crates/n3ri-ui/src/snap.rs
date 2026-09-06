@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 
-use crate::cursor::{CursorPosition, UiArea};
+use crate::cursor::{cursor_changed, CursorPosition, UiArea};
 use crate::dock::IsDragging;
 use crate::window::{AppWindow, CinematicLocked, WindowDrag};
 
@@ -11,7 +11,7 @@ impl Plugin for SnapPlugin {
         app.insert_resource(SnapState::default()).add_systems(
             Update,
             (
-                detect_snap_zone,
+                detect_snap_zone.run_if(cursor_changed),
                 update_snap_preview.after(detect_snap_zone),
                 apply_snap.after(detect_snap_zone),
             ),

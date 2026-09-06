@@ -1,8 +1,10 @@
 use bevy::app::AppExit;
 use bevy::prelude::*;
 use chrono::{Datelike, Local as ChronoLocal, Timelike};
-use std::sync::{Arc, Mutex};
+use std::sync::mpsc::Receiver;
+use std::sync::Mutex;
 use std::thread;
+use std::time::Duration;
 
 use crate::font::N3riFonts;
 
@@ -67,9 +69,7 @@ impl Default for FocusedTitle {
 struct TopbarState {
     cpu: f32,
     battery: Option<(u8, bool)>,
-    volume: Arc<Mutex<Option<u8>>>,
-    volume_fetched: bool,
-    prev_cpu: (u64, u64),
+    net: Option<bool>,
 }
 
 impl Default for TopbarState {
@@ -77,11 +77,62 @@ impl Default for TopbarState {
         Self {
             cpu: 0.0,
             battery: None,
-            volume: Arc::new(Mutex::new(None)),
-            volume_fetched: false,
-            prev_cpu: (0, 0),
+            net: None,
         }
     }
+}
+
+/// 后台采样线程一次产出的结果（逐项 Option：单次读取失败不影响其他指标）。
+#[derive(Default)]
+struct TopbarSample {
+    cpu: Option<f32>,
+    battery: Option<(u8, bool)>,
+    net: Option<bool>,
+}
+
+#[derive(Resource, Default)]
+struct TopbarSampler {
+    rx: Option<Mutex<Receiver<TopbarSample>>>,
+}
+
+/// 伪 OS 主音量（channel 0）：随设置页「主音量」实时联动，等同
+/// `GlobalVolume` 的生效值（toggles[0] 关 = 静音 → 0%）。
+fn master_volume_pct(settings: &n3ri_core::config::UserSettings) -> u8 {
+    if settings.toggles[0] {
+        settings.volumes[0]
+    } else {
+        0
+    }
+}
+
+/// 1s 后台采样线程：/proc/stat、/proc/net/route、/sys/class/power_supply
+/// 全部移出主线程（原先在 topbar_poll 里每 1s 阻塞读一次 sysfs）。
+/// 采样间隔与 topbar_poll 对齐，主线程只排干 channel。
+fn spawn_topbar_sampler(mut sampler: ResMut<TopbarSampler>) {
+    let (tx, rx) = std::sync::mpsc::channel();
+    thread::spawn(move || {
+        let mut prev_cpu = (0u64, 0u64);
+        loop {
+            let mut s = TopbarSample::default();
+            if let Some((total, idle)) = read_cpu_sample() {
+                if prev_cpu.0 > 0 {
+                    let d_total = total.saturating_sub(prev_cpu.0);
+                    let d_idle = idle.saturating_sub(prev_cpu.1);
+                    if d_total > 0 {
+                        s.cpu = Some(((d_total - d_idle) as f32 / d_total as f32) * 100.0);
+                    }
+                }
+                prev_cpu = (total, idle);
+            }
+            s.battery = read_battery();
+            s.net = Some(net_online());
+            if tx.send(s).is_err() {
+                break; // 主线程已退出
+            }
+            thread::sleep(Duration::from_millis(1000));
+        }
+    });
+    sampler.rx = Some(Mutex::new(rx));
 }
 
 #[derive(Resource, Default)]
@@ -109,6 +160,8 @@ impl Plugin for TopbarPlugin {
         app.init_resource::<FocusedTitle>()
             .init_resource::<TopbarState>()
             .init_resource::<TopbarEnts>()
+            .init_resource::<TopbarSampler>()
+            .add_systems(Startup, spawn_topbar_sampler)
             .add_systems(
                 Update,
                 (
@@ -479,6 +532,8 @@ fn topbar_poll(
     time: Res<Time>,
     mut local: Local<f32>,
     mut state: ResMut<TopbarState>,
+    sampler: Res<TopbarSampler>,
+    settings: Option<Res<n3ri_core::config::UserSettings>>,
     ents: Res<TopbarEnts>,
     mut text_query: Query<&mut Text>,
     mut color_query: Query<&mut TextColor>,
@@ -490,38 +545,29 @@ fn topbar_poll(
     }
     *local = 0.0;
 
-    if let Some((total, idle)) = read_cpu_sample() {
-        if state.prev_cpu.0 > 0 {
-            let d_total = total.saturating_sub(state.prev_cpu.0);
-            let d_idle = idle.saturating_sub(state.prev_cpu.1);
-            if d_total > 0 {
-                state.cpu = ((d_total - d_idle) as f32 / d_total as f32) * 100.0;
+    // 排干后台采样线程：只取最新一次结果（丢弃积压的中间值）。
+    if let Some(mutex) = &sampler.rx {
+        if let Ok(rx) = mutex.lock() {
+            let mut latest = None;
+            while let Ok(s) = rx.try_recv() {
+                latest = Some(s);
+            }
+            if let Some(s) = latest {
+                if let Some(cpu) = s.cpu {
+                    state.cpu = cpu;
+                }
+                if let Some(net) = s.net {
+                    state.net = Some(net);
+                }
+                if s.battery.is_some() {
+                    state.battery = s.battery;
+                }
             }
         }
-        state.prev_cpu = (total, idle);
     }
 
-    let net = net_online();
-
-    if !state.volume_fetched {
-        state.volume_fetched = true;
-        let shared = state.volume.clone();
-        thread::spawn(move || {
-            let pct = std::process::Command::new("pactl")
-                .args(["get-sink-volume", "@DEFAULT_SINK@"])
-                .env("LC_ALL", "C")
-                .output()
-                .ok()
-                .and_then(|out| {
-                    let text = String::from_utf8_lossy(&out.stdout).to_string();
-                    parse_volume_pct(&text)
-                });
-            *shared.lock().unwrap() = pct;
-        });
-    }
-    let volume = *state.volume.lock().unwrap();
-
-    state.battery = read_battery();
+    // 主音量来自 UserSettings（设置页实时联动），非宿主 pactl。
+    let master_vol = settings.as_deref().map(master_volume_pct);
 
     if let Some(e) = ents.cpu_text {
         if let Ok(mut text) = text_query.get_mut(e) {
@@ -531,11 +577,13 @@ fn topbar_poll(
             }
         }
     }
-    if let Some(e) = ents.net_icon {
-        if let Ok(mut img) = image_query.get_mut(e) {
-            let target = if net { OK_GREEN } else { BAD_RED };
-            if img.color != target {
-                img.color = target;
+    if let Some(net) = state.net {
+        if let Some(e) = ents.net_icon {
+            if let Ok(mut img) = image_query.get_mut(e) {
+                let target = if net { OK_GREEN } else { BAD_RED };
+                if img.color != target {
+                    img.color = target;
+                }
             }
         }
     }
@@ -552,7 +600,7 @@ fn topbar_poll(
     }
     if let Some(e) = ents.sound_text {
         if let Ok(mut text) = text_query.get_mut(e) {
-            let target = match volume {
+            let target = match master_vol {
                 Some(v) => format!("{}%", v),
                 None => "--".to_string(),
             };
@@ -570,25 +618,27 @@ fn topbar_poll(
             }
         }
     }
-    if let Some(e) = ents.popup_net_val {
-        if let Ok(mut text) = text_query.get_mut(e) {
-            let target = if net { "已连接" } else { "未连接" }.to_string();
-            if **text != target {
-                **text = target;
+    if let Some(net) = state.net {
+        if let Some(e) = ents.popup_net_val {
+            if let Ok(mut text) = text_query.get_mut(e) {
+                let target = if net { "已连接" } else { "未连接" }.to_string();
+                if **text != target {
+                    **text = target;
+                }
             }
-        }
-        if let Ok(mut color) = color_query.get_mut(e) {
-            let target = if net { OK_GREEN } else { BAD_RED };
-            if color.0 != target {
-                color.0 = target;
+            if let Ok(mut color) = color_query.get_mut(e) {
+                let target = if net { OK_GREEN } else { BAD_RED };
+                if color.0 != target {
+                    color.0 = target;
+                }
             }
         }
     }
     if let Some(e) = ents.popup_sound_val {
         if let Ok(mut text) = text_query.get_mut(e) {
-            let target = match volume {
-                Some(v) => format!("{}%", v),
-                None => "未获取".to_string(),
+            let target = match master_vol {
+                Some(v) => format!("主音量 {}%", v),
+                None => "--".to_string(),
             };
             if **text != target {
                 **text = target;
@@ -736,15 +786,4 @@ fn read_battery() -> Option<(u8, bool)> {
         }
     }
     None
-}
-
-fn parse_volume_pct(text: &str) -> Option<u8> {
-    let idx = text.find('%')?;
-    let before = &text[..idx];
-    let digits: String = before
-        .chars()
-        .rev()
-        .take_while(|c| c.is_ascii_digit())
-        .collect();
-    digits.chars().rev().collect::<String>().parse().ok()
 }

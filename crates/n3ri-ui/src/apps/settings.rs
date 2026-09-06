@@ -6,9 +6,10 @@ use crate::apps::terminal::paste_text;
 use bevy::input::keyboard::{Key, KeyCode, KeyboardInput};
 use bevy::window::Ime;
 use crate::input_focus::{TextInputFocus, TextInputOwner};
+use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::cursor::CursorPosition;
 use crate::font::N3riFonts;
@@ -76,8 +77,6 @@ struct SettingsState {
     cpu: f32,
     mem: f32,
     gpu: Option<f32>,
-    prev_cpu: (u64, u64),
-    prev_gpu_rc6: Option<(u64, Instant)>,
     llm_form: [String; 5],
     llm_focus: Option<usize>,
     llm_test: Arc<Mutex<LlmTest>>,
@@ -95,8 +94,6 @@ impl Default for SettingsState {
             cpu: 0.0,
             mem: 0.0,
             gpu: None,
-            prev_cpu: (0, 0),
-            prev_gpu_rc6: None,
             llm_form: {
                 let cfg = n3ri_llm::load_config();
                 let mut form = [
@@ -247,6 +244,8 @@ impl Plugin for SettingsPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<SettingsState>()
             .init_resource::<SettingsEntities>()
+            .init_resource::<SysSampler>()
+            .add_systems(Startup, spawn_sys_sampler)
             .add_systems(
                 Update,
                 (
@@ -1721,10 +1720,55 @@ fn settings_slider_drag(
     }
 }
 
+/// 后台采样线程 0.5s 一次产出的系统指标（CPU/内存/GPU，均读 /proc 与 sysfs）。
+#[derive(Default)]
+struct SysSample {
+    cpu: Option<f32>,
+    mem: Option<f32>,
+    gpu: Option<f32>,
+}
+
+#[derive(Resource, Default)]
+struct SysSampler {
+    rx: Option<Mutex<Receiver<SysSample>>>,
+}
+
+/// CPU/内存/GPU 占用轮询移出主线程（原先 settings_poll 每 0.5s 阻塞读
+/// /proc/stat、/proc/meminfo 与 /sys/class/drm）。差分基线（prev_cpu /
+/// prev_gpu_rc6）随线程走，主线程只排干 channel。
+fn spawn_sys_sampler(mut sampler: ResMut<SysSampler>) {
+    let (tx, rx) = std::sync::mpsc::channel();
+    thread::spawn(move || {
+        let mut prev_cpu = (0u64, 0u64);
+        let mut prev_gpu_rc6: Option<(u64, Instant)> = None;
+        loop {
+            let mut s = SysSample::default();
+            if let Some((total, idle)) = read_cpu_sample() {
+                if prev_cpu.0 > 0 {
+                    let d_total = total.saturating_sub(prev_cpu.0);
+                    let d_idle = idle.saturating_sub(prev_cpu.1);
+                    if d_total > 0 {
+                        s.cpu = Some(((d_total - d_idle) as f32 / d_total as f32) * 100.0);
+                    }
+                }
+                prev_cpu = (total, idle);
+            }
+            s.mem = read_mem_percent();
+            s.gpu = read_gpu_percent(&mut prev_gpu_rc6);
+            if tx.send(s).is_err() {
+                break; // 主线程已退出
+            }
+            thread::sleep(Duration::from_millis(500));
+        }
+    });
+    sampler.rx = Some(Mutex::new(rx));
+}
+
 fn settings_poll(
     time: Res<Time>,
     mut local: Local<f32>,
     mut state: ResMut<SettingsState>,
+    sampler: Res<SysSampler>,
 ) {
     *local += time.delta_secs();
     if *local < 0.5 {
@@ -1732,21 +1776,26 @@ fn settings_poll(
     }
     *local = 0.0;
 
-    if let Some((total, idle)) = read_cpu_sample() {
-        if state.prev_cpu.0 > 0 {
-            let d_total = total.saturating_sub(state.prev_cpu.0);
-            let d_idle = idle.saturating_sub(state.prev_cpu.1);
-            if d_total > 0 {
-                state.cpu = ((d_total - d_idle) as f32 / d_total as f32) * 100.0;
+    // 排干后台采样线程：只取最新一次结果（丢弃积压的中间值）。
+    if let Some(mutex) = &sampler.rx {
+        if let Ok(rx) = mutex.lock() {
+            let mut latest = None;
+            while let Ok(s) = rx.try_recv() {
+                latest = Some(s);
+            }
+            if let Some(s) = latest {
+                if let Some(cpu) = s.cpu {
+                    state.cpu = cpu;
+                }
+                if let Some(mem) = s.mem {
+                    state.mem = mem;
+                }
+                if s.gpu.is_some() {
+                    state.gpu = s.gpu;
+                }
             }
         }
-        state.prev_cpu = (total, idle);
     }
-
-    if let Some(mem) = read_mem_percent() {
-        state.mem = mem;
-    }
-    state.gpu = read_gpu_percent(&mut state.prev_gpu_rc6);
 
     let done = match &*state.ping.lock().unwrap() {
         PingState::Done(ok, ms) => Some((*ok, *ms)),

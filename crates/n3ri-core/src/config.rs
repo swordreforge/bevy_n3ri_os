@@ -41,6 +41,13 @@ pub struct UserSettings {
     /// 0 = 无限制（默认：窗口模式不限帧；壁纸模式仍受 15ms Reactive wait ≈66fps 上限约束）。
     #[serde(default)]
     pub fps_idx: usize,
+    /// 垂直同步开关（设置 → 显示效果 → 垂直同步）：开 = `PresentMode::AutoVsync`，
+    /// 关 = `AutoNoVsync`（默认，帧就绪即呈现，帧率跟实际帧时间走）。
+    #[serde(default)]
+    pub vsync: bool,
+    /// 抗锯齿档位（设置 → 显示效果 → 抗锯齿）；索引见 [`MSAA_SAMPLES`]。默认 4x。
+    #[serde(default = "default_msaa_idx")]
+    pub msaa_idx: usize,
     /// 壁纸模式开关（设置 → 显示效果）；切换时主程序自我重启进入另一模式
     #[serde(default)]
     pub wallpaper_enabled: bool,
@@ -67,18 +74,32 @@ fn default_true() -> bool {
 
 /// 帧率上限档位（设置 → 显示效果 → 帧率上限），索引即 [`UserSettings::fps_idx`]。
 /// `None` = 无限制。
-pub const FPS_TIER_HZ: [Option<u32>; 6] = [
+pub const FPS_TIER_HZ: [Option<u32>; 7] = [
     None,
     Some(24),
     Some(30),
     Some(45),
     Some(60),
+    Some(90),
     Some(120),
 ];
 
 /// fps_idx → 帧率上限（Hz）；`None` = 无限制。越界索引回落为 0（无限制）。
 pub fn fps_limit_hz(idx: usize) -> Option<f64> {
     FPS_TIER_HZ.get(idx).copied().flatten().map(f64::from)
+}
+
+/// 抗锯齿档位样本数（设置 → 显示效果 → 抗锯齿），索引即 [`UserSettings::msaa_idx`]。
+/// 1 sample = 关闭（bevy `Msaa::Off` 即 1 sample）。
+pub const MSAA_SAMPLES: [u32; 4] = [1, 2, 4, 8];
+
+/// msaa_idx → 样本数。越界回落为 4（默认 4x）。
+pub fn msaa_samples(idx: usize) -> u32 {
+    MSAA_SAMPLES.get(idx).copied().unwrap_or(4)
+}
+
+fn default_msaa_idx() -> usize {
+    2
 }
 
 impl Default for UserSettings {
@@ -88,6 +109,8 @@ impl Default for UserSettings {
             toggles: [true, true, true, true],
             quality_idx: 0,
             fps_idx: 0,
+            vsync: false,
+            msaa_idx: 2,
             wallpaper_enabled: false,
             natural_scroll: true,
             music_dir: None,

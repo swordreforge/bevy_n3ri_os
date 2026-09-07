@@ -36,7 +36,7 @@ Servo 经 surfman/GL 离屏渲染 → `read_full_frame()` 读回 RGBA → render
 
 ## 帧率上限（2026-09：设置 → 显示效果）
 
-设置 → 显示效果 →「帧率上限」循环档：无限制 / 24 / 30 / 45 / 60 / 120。
+设置 → 显示效果 →「帧率上限」循环档：无限制 / 24 / 30 / 45 / 60 / 90 / 120。
 档位真源 = `n3ri-core` `config::FPS_TIER_HZ`（索引 = `UserSettings.fps_idx`，
 `fps_limit_hz(idx)` 取 Hz；0 = 无限制 = serde 默认，旧 JSON 自动回落无限制）。
 UI 文本由 `fps_label` 从同一数组衍生，勿另建标签清单。
@@ -50,9 +50,21 @@ UI 文本由 `fps_label` 从同一数组衍生，勿另建标签清单。
 - **壁纸模式**：**不要注册 FramepacePlugin**——reactive wait 与 render cleanup
   spin_sleep 是两个叠加节流器，混用帧周期 = limit + wait（24fps 档实际 ~18fps）。
   沿用 `wallpaper_frame_pace` 的 wait 治理：活动 wait = `round(1000/hz)` ms
-  （24→42、30→33、45→22、60→17、120→8），无限制维持 15ms（≈66fps 上限）；
+  （24→42、30→33、45→22、60→17、90→11、120→8），无限制维持 15ms（≈66fps 上限）；
   静置档 = `max(活动, 33ms)`（≤30fps 档不再降频）。档位改变经 `user.is_changed()`
   侦测、独立于输入立刻落新 wait（点击系统可能晚于本系统运行，勿只在活动分支换 wait）。
+
+显示效果页同区另两项（均即时生效、无需重启）：
+- **垂直同步**（`UserSettings.vsync`，默认关）：窗口模式 `main.rs::sync_vsync` 写主窗
+  `Window.present_mode`——开 = `AutoVsync`，关 = `AutoNoVsync`（帧就绪即呈现）。
+  bevy_render 侦测 `present_mode_changed` 即 `configure_surface` 重建；壁纸模式无主窗不适用。
+  注意与帧率上限的关系：开垂直同步后 Fifo 会把帧时间钳到 vblank 整数倍（<显示器刷新率的
+  限帧档优先于 vsync 生效）。
+- **抗锯齿**（`UserSettings.msaa_idx` → `config::MSAA_SAMPLES`，默认 4x）：`main.rs::sync_msaa`
+  写带 `UiMainCamera` 标记相机（窗口主相机 / 壁纸 surface 相机）的 `Msaa` 组件——
+  bevy 0.19 per-camera MSAA 每帧按组件重建附件，改动即时生效。只在设置变更后写，
+  启动期仍尊重 `N3RI_MSAA=0|1|2|4|8` 环境变量 A/B（spawn 相机已按 env/设置初始化）。
+  Live2D RTT 相机不走本档位（独立读 env，默认 Off）。
 
 ## Non-Goals（明确不做）
 

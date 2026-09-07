@@ -99,6 +99,44 @@ fn sync_fps_limiter(settings: Res<UserSettings>, mut fp: ResMut<FramepaceSetting
     }
 }
 
+/// vsync 档 → 主窗 present mode：开 = AutoVsync（自动垂直同步），关 = AutoNoVsync。
+fn present_mode_for(vsync: bool) -> bevy::window::PresentMode {
+    if vsync {
+        bevy::window::PresentMode::AutoVsync
+    } else {
+        bevy::window::PresentMode::AutoNoVsync
+    }
+}
+
+/// 设置页「垂直同步」→ Window.present_mode。bevy_render 侦测 present_mode 变化
+/// 即 configure_surface 重建（AutoVsync→FifoRelaxed/Fifo 回退链），下一帧生效。
+/// 仅窗口模式注册（壁纸模式无主窗）。
+fn sync_vsync(
+    settings: Res<UserSettings>,
+    mut windows: Query<&mut bevy::window::Window, With<bevy::window::PrimaryWindow>>,
+) {
+    let target = present_mode_for(settings.vsync);
+    for mut window in windows.iter_mut() {
+        if window.present_mode != target {
+            window.present_mode = target;
+        }
+    }
+}
+
+/// 设置页「抗锯齿」→ 主相机 Msaa 组件（per-camera MSAA，bevy 每帧按组件重建附件）。
+/// 只在设置变更后写——启动期尊重 N3RI_MSAA 环境变量 A/B（spawn 相机已按 env/设置初始化）。
+fn sync_msaa(settings: Res<UserSettings>, mut cameras: Query<&mut Msaa, With<UiMainCamera>>) {
+    if !settings.is_changed() {
+        return;
+    }
+    let target = msaa_for_idx(settings.msaa_idx);
+    for mut msaa in cameras.iter_mut() {
+        if *msaa != target {
+            *msaa = target;
+        }
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "-h" || a == "--help") {
@@ -187,6 +225,7 @@ fn run_windowed() {
         .add_systems(Update, (chat_rise_sync, chat_emotion_bridge))
         .add_systems(Update, sync_pet_render_config)
         .add_systems(Update, sync_fps_limiter)
+        .add_systems(Update, (sync_vsync, sync_msaa))
         .add_systems(OnEnter(OsState::Boot), spawn_boot_screen)
         .add_systems(
             Update,
@@ -288,6 +327,7 @@ fn run_wallpaper() {
                 track_satellite_child,
                 sync_pet_render_config,
                 wallpaper_frame_pace,
+                sync_msaa,
             ),
         )
         .add_systems(OnEnter(OsState::Boot), spawn_boot_screen)
@@ -306,20 +346,30 @@ fn run_wallpaper() {
         .run();
 }
 
-/// 主相机（UI + 桌面背景 shader）MSAA。默认与 Bevy 一致 Sample4；设
-/// `N3RI_MSAA=0|1|2|4|8` 可统一覆盖主相机与 Live2D RTT（见 n3ri-live2d
-/// 同款环境变量），用于低端机 A/B。0/1 = Off（1 sample）。
-fn ui_msaa() -> Msaa {
+/// 设置页「抗锯齿」档位 → bevy Msaa（1 sample = Off）。
+fn msaa_for_idx(idx: usize) -> Msaa {
+    Msaa::from_samples(n3ri_core::config::msaa_samples(idx))
+}
+
+/// 主相机（UI + 桌面背景 shader）MSAA：默认取 UserSettings.msaa_idx
+/// （设置 → 显示效果 → 抗锯齿）；`N3RI_MSAA=0|1|2|4|8` 环境变量优先
+/// （低端机 A/B，Live2D RTT 同款见 n3ri-live2d renderer）。0/1 = Off（1 sample）。
+fn camera_msaa(settings: &UserSettings) -> Msaa {
     match std::env::var("N3RI_MSAA").ok().as_deref() {
         Some("0") | Some("1") => Msaa::Off,
         Some("2") => Msaa::Sample2,
+        Some("4") => Msaa::Sample4,
         Some("8") => Msaa::Sample8,
-        _ => Msaa::Sample4,
+        _ => msaa_for_idx(settings.msaa_idx),
     }
 }
 
-fn spawn_camera(mut commands: Commands) {
-    commands.spawn((Camera2d, ui_msaa()));
+/// 受「抗锯齿」档位驱动的屏上相机（窗口模式主相机 / 壁纸模式 surface 相机）。
+#[derive(Component)]
+struct UiMainCamera;
+
+fn spawn_camera(mut commands: Commands, settings: Res<UserSettings>) {
+    commands.spawn((Camera2d, UiMainCamera, camera_msaa(&settings)));
 }
 
 /// 统一 UiArea → 宠物视口目标（物理像素 = 逻辑 × scale）。
@@ -340,8 +390,14 @@ fn sync_pet_target_area(
     }
 }
 
-fn spawn_wallpaper_camera(mut commands: Commands) {
-    commands.spawn((Camera2d, LiveWallpaperCamera, IsDefaultUiCamera, ui_msaa()));
+fn spawn_wallpaper_camera(mut commands: Commands, settings: Res<UserSettings>) {
+    commands.spawn((
+        Camera2d,
+        LiveWallpaperCamera,
+        IsDefaultUiCamera,
+        UiMainCamera,
+        camera_msaa(&settings),
+    ));
 }
 
 /// 壁纸模式静置降频：无输入 3 秒后 wait 15ms→33ms（66fps→30fps），

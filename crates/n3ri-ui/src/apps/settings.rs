@@ -35,6 +35,14 @@ fn fps_label(idx: usize) -> String {
         None => "无限制".into(),
     }
 }
+
+/// msaa_idx → 显示文本（衍生自 MSAA_SAMPLES）。1 sample = 关闭。
+fn msaa_label(idx: usize) -> String {
+    match n3ri_core::config::msaa_samples(idx) {
+        1 => "关闭".to_string(),
+        n => format!("{n}x"),
+    }
+}
 const TAB_LABELS: [(&str, &str); 8] = [
     ("sound", "声音"),
     ("music", "音乐"),
@@ -133,6 +141,9 @@ struct SettingsEntities {
     toggle_knob: [Option<Entity>; 4],
     quality_label: Option<Entity>,
     fps_label: Option<Entity>,
+    msaa_label: Option<Entity>,
+    vsync_toggle_bg: Option<Entity>,
+    vsync_toggle_knob: Option<Entity>,
     net_status: Option<Entity>,
     net_latency: Option<Entity>,
     llm_text: [Option<Entity>; 5],
@@ -179,6 +190,12 @@ struct QualityButton;
 
 #[derive(Component)]
 struct FpsLimitButton;
+
+#[derive(Component)]
+struct MsaaButton;
+
+#[derive(Component)]
+struct VsyncToggle;
 
 #[derive(Component)]
 struct PingButton;
@@ -281,7 +298,8 @@ impl Plugin for SettingsPlugin {
                     settings_music_sync,
                     settings_music_list_rebuild,
                 ),
-            );
+            )
+            .add_systems(Update, (settings_vsync_click, settings_msaa_click));
     }
 }
 
@@ -1185,6 +1203,92 @@ fn spawn_display_page(
         })
         .with_children(|row| {
             row.spawn((
+                Text::new("垂直同步"),
+                TextFont {
+                    font: FontSource::Handle(fonts.default.clone()),
+                    font_size: FontSize::Px(14.0),
+                    ..default()
+                },
+                TextColor(TEXT_MAIN),
+            ));
+            row.spawn(Node {
+                width: Val::Px(60.0),
+                height: Val::Px(1.0),
+                ..default()
+            });
+            let (bg, knob) = spawn_vsync_toggle(row, settings.vsync);
+            ents.vsync_toggle_bg = Some(bg);
+            ents.vsync_toggle_knob = Some(knob);
+        });
+
+        page.spawn(Node {
+            width: Val::Px(280.0),
+            height: Val::Px(44.0),
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::SpaceBetween,
+            padding: UiRect::all(Val::Px(12.0)),
+            border_radius: BorderRadius::all(Val::Px(8.0)),
+            border: UiRect::all(Val::Px(1.0)),
+            ..default()
+        })
+        .with_children(|row| {
+            row.spawn((
+                Text::new("抗锯齿"),
+                TextFont {
+                    font: FontSource::Handle(fonts.default.clone()),
+                    font_size: FontSize::Px(14.0),
+                    ..default()
+                },
+                TextColor(TEXT_MAIN),
+            ));
+            row.spawn(Node {
+                width: Val::Px(60.0),
+                height: Val::Px(1.0),
+                ..default()
+            });
+            row.spawn((
+                Button,
+                MsaaButton,
+                Node {
+                    height: Val::Px(28.0),
+                    padding: UiRect::horizontal(Val::Px(12.0)),
+                    align_items: AlignItems::Center,
+                    justify_content: JustifyContent::Center,
+                    border_radius: BorderRadius::all(Val::Px(6.0)),
+                    border: UiRect::all(Val::Px(1.0)),
+                    ..default()
+                },
+                BorderColor::all(BUTTON_BORDER_COLOR),
+                BackgroundColor(Color::srgba(0.04, 0.08, 0.14, 0.8)),
+            ))
+            .with_children(|b| {
+                ents.msaa_label = Some(
+                    b.spawn((
+                        Text::new(msaa_label(settings.msaa_idx)),
+                        TextFont {
+                            font: FontSource::Handle(fonts.default.clone()),
+                            font_size: FontSize::Px(13.0),
+                            ..default()
+                        },
+                        TextColor(TEXT_MAIN),
+                    ))
+                    .id(),
+                );
+            });
+        });
+
+        page.spawn(Node {
+            width: Val::Px(280.0),
+            height: Val::Px(44.0),
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::SpaceBetween,
+            padding: UiRect::all(Val::Px(12.0)),
+            border_radius: BorderRadius::all(Val::Px(8.0)),
+            border: UiRect::all(Val::Px(1.0)),
+            ..default()
+        })
+        .with_children(|row| {
+            row.spawn((
                 Text::new("壁纸模式"),
                 TextFont {
                     font: FontSource::Handle(fonts.default.clone()),
@@ -1212,6 +1316,43 @@ fn spawn_natural_scroll_toggle(parent: &mut ChildSpawnerCommands, on: bool) -> (
         .spawn((
             Button,
             NaturalScrollToggle,
+            Node {
+                width: Val::Px(40.0),
+                height: Val::Px(20.0),
+                border_radius: BorderRadius::all(Val::Px(10.0)),
+                ..default()
+            },
+            BackgroundColor(if on { ACCENT } else { TOGGLE_OFF }),
+        ))
+        .id();
+
+    let mut knob_e = Entity::PLACEHOLDER;
+    parent.commands().entity(bg).with_children(|t| {
+        knob_e = t
+            .spawn((
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: Val::Px(if on { 22.0 } else { 2.0 }),
+                    top: Val::Px(2.0),
+                    width: Val::Px(16.0),
+                    height: Val::Px(16.0),
+                    border_radius: BorderRadius::all(Val::Px(8.0)),
+                    ..default()
+                },
+                BackgroundColor(Color::WHITE),
+            ))
+            .id();
+    });
+
+    (bg, knob_e)
+}
+
+/// 垂直同步开关（设置 → 显示效果）：开 = 自动垂直同步（PresentMode::AutoVsync）。
+fn spawn_vsync_toggle(parent: &mut ChildSpawnerCommands, on: bool) -> (Entity, Entity) {
+    let bg = parent
+        .spawn((
+            Button,
+            VsyncToggle,
             Node {
                 width: Val::Px(40.0),
                 height: Val::Px(20.0),
@@ -1747,6 +1888,41 @@ fn settings_fps_click(
     }
 }
 
+/// 垂直同步开关：翻转后保存并即时生效（窗口模式 main.rs 读 vsync 写 Window.present_mode；
+/// 壁纸模式无主窗，present_mode 不适用）。
+fn settings_vsync_click(
+    mouse: Res<ButtonInput<MouseButton>>,
+    toggle_query: Query<&Interaction, With<VsyncToggle>>,
+    mut settings: ResMut<UserSettings>,
+) {
+    if !mouse.just_pressed(MouseButton::Left) {
+        return;
+    }
+    for interaction in toggle_query.iter() {
+        if *interaction == Interaction::Pressed {
+            settings.vsync = !settings.vsync;
+            settings.save();
+        }
+    }
+}
+
+/// 抗锯齿循环档（关闭→2x→4x→8x）。保存后即时生效：main.rs sync_msaa 写相机 Msaa 组件。
+fn settings_msaa_click(
+    mouse: Res<ButtonInput<MouseButton>>,
+    msaa_query: Query<&Interaction, With<MsaaButton>>,
+    mut settings: ResMut<UserSettings>,
+) {
+    if !mouse.just_pressed(MouseButton::Left) {
+        return;
+    }
+    for interaction in msaa_query.iter() {
+        if *interaction == Interaction::Pressed {
+            settings.msaa_idx = (settings.msaa_idx + 1) % n3ri_core::config::MSAA_SAMPLES.len();
+            settings.save();
+        }
+    }
+}
+
 fn settings_ping_click(
     mouse: Res<ButtonInput<MouseButton>>,
     ping_query: Query<&Interaction, With<PingButton>>,
@@ -1993,6 +2169,15 @@ fn settings_sync_ui(
         }
     }
 
+    if let Some(label_e) = ents.msaa_label {
+        if let Ok(mut text) = text_query.get_mut(label_e) {
+            let target = msaa_label(settings.msaa_idx);
+            if **text != target {
+                **text = target;
+            }
+        }
+    }
+
     if let Some(bg_e) = ents.wallpaper_toggle_bg {
         if let Ok((_, mut bg)) = node_bg_query.get_mut(bg_e) {
             let target = if settings.wallpaper_enabled { ACCENT } else { TOGGLE_OFF };
@@ -2018,6 +2203,20 @@ fn settings_sync_ui(
     if let Some(knob_e) = ents.natural_scroll_toggle_knob {
         if let Ok((mut node, _)) = node_bg_query.get_mut(knob_e) {
             set_px_left(&mut node, if settings.natural_scroll { 22.0 } else { 2.0 });
+        }
+    }
+
+    if let Some(bg_e) = ents.vsync_toggle_bg {
+        if let Ok((_, mut bg)) = node_bg_query.get_mut(bg_e) {
+            let target = if settings.vsync { ACCENT } else { TOGGLE_OFF };
+            if bg.0 != target {
+                bg.0 = target;
+            }
+        }
+    }
+    if let Some(knob_e) = ents.vsync_toggle_knob {
+        if let Ok((mut node, _)) = node_bg_query.get_mut(knob_e) {
+            set_px_left(&mut node, if settings.vsync { 22.0 } else { 2.0 });
         }
     }
 

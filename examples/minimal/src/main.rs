@@ -1,3 +1,5 @@
+use bevy::input::keyboard::KeyboardInput;
+use bevy::input::mouse::MouseWheel;
 use bevy::log::DEFAULT_FILTER;
 use bevy::prelude::*;
 use bevy::ui::IsDefaultUiCamera;
@@ -12,7 +14,9 @@ use n3ri_live2d::{
 use n3ri_ui::cursor::{CursorPosition, UiArea};
 use n3ri_ui::desktop::DesktopBackgroundMaterial;
 use n3ri_ui::font::N3riFonts;
-use n3ri_ui::wallpaper_bridge::{SatelliteDeltaChannel, WallpaperInputBridgePlugin};
+use n3ri_ui::wallpaper_bridge::{
+    SatelliteDeltaChannel, SatelliteFrame, WallpaperInputBridgePlugin,
+};
 use n3ri_ui::wallpaper_ime::WallpaperImePlugin;
 use n3ri_ui::wallpaper_keyboard::WallpaperKeyboardPlugin;
 use n3ri_ui::window::AppWindow;
@@ -243,6 +247,7 @@ fn run_wallpaper() {
     }
     app.add_systems(Startup, (spawn_wallpaper_camera, spawn_satellite_process))
         .add_systems(Startup, init_pet_render_config)
+        .init_resource::<WallpaperFramePace>()
         .add_systems(
             Update,
             (
@@ -251,6 +256,7 @@ fn run_wallpaper() {
                 sync_pet_target_area,
                 track_satellite_child,
                 sync_pet_render_config,
+                wallpaper_frame_pace,
             ),
         )
         .add_systems(OnEnter(OsState::Boot), spawn_boot_screen)
@@ -305,6 +311,78 @@ fn sync_pet_target_area(
 
 fn spawn_wallpaper_camera(mut commands: Commands) {
     commands.spawn((Camera2d, LiveWallpaperCamera, IsDefaultUiCamera, ui_msaa()));
+}
+
+/// 壁纸模式静置降频：无输入 3 秒后 wait 15ms→33ms（66fps→30fps），
+/// 追平与窗口模式的差距并减半 page fault 建页开销。任一输入即恢复。
+/// 只在 Desktop 降频，Boot/Loading 保持全速。壁纸模式无主窗，
+/// focused/unfocused 两档必须一起改（focused 判定不可靠）。
+const WALLPAPER_ACTIVE_WAIT_MS: u64 = 15;
+const WALLPAPER_IDLE_WAIT_MS: u64 = 33;
+const WALLPAPER_IDLE_TIMEOUT_SECS: f32 = 3.0;
+
+#[derive(Resource, Default)]
+struct WallpaperFramePace {
+    last_active_secs: f32,
+    downclocked: bool,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn wallpaper_frame_pace(
+    time: Res<Time>,
+    state: Res<State<OsState>>,
+    cursor: Res<CursorPosition>,
+    frame: Res<SatelliteFrame>,
+    mouse: Res<ButtonInput<MouseButton>>,
+    keyboard: MessageReader<KeyboardInput>,
+    ime: MessageReader<Ime>,
+    wheel: MessageReader<MouseWheel>,
+    mut settings: ResMut<bevy::winit::WinitSettings>,
+    mut pace: ResMut<WallpaperFramePace>,
+) {
+    fn set_wait(settings: &mut bevy::winit::WinitSettings, ms: u64) {
+        let wait = std::time::Duration::from_millis(ms);
+        for mode in [
+            &mut settings.focused_mode,
+            &mut settings.unfocused_mode,
+        ] {
+            if let bevy::winit::UpdateMode::Reactive {
+                wait: ref mut w, ..
+            } = mode
+            {
+                *w = wait;
+            }
+        }
+    }
+
+    let now = time.elapsed_secs();
+    // MessageReader 是广播语义：is_empty 只读游标不消费，各消费方互不干扰。
+    let active = cursor.is_changed()
+        || frame.scroll != Vec2::ZERO
+        || mouse.just_pressed(MouseButton::Left)
+        || mouse.just_pressed(MouseButton::Right)
+        || mouse.just_pressed(MouseButton::Middle)
+        || mouse.just_released(MouseButton::Left)
+        || mouse.just_released(MouseButton::Right)
+        || mouse.just_released(MouseButton::Middle)
+        || !keyboard.is_empty()
+        || !ime.is_empty()
+        || !wheel.is_empty();
+    if active {
+        pace.last_active_secs = now;
+        if pace.downclocked {
+            set_wait(&mut settings, WALLPAPER_ACTIVE_WAIT_MS);
+            pace.downclocked = false;
+        }
+        return;
+    }
+    if *state.get() == OsState::Desktop
+        && !pace.downclocked
+        && now - pace.last_active_secs > WALLPAPER_IDLE_TIMEOUT_SECS
+    {
+        set_wait(&mut settings, WALLPAPER_IDLE_WAIT_MS);
+        pace.downclocked = true;
+    }
 }
 
 #[derive(Resource)]

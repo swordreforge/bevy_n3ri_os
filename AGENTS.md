@@ -34,6 +34,26 @@ Servo 经 surfman/GL 离屏渲染 → `read_full_frame()` 读回 RGBA → render
 - **不要改回** bevy_wry/bevy_cef 方案；也不要移除 CPU readback 改共享纹理（桌面
   单 GPU 是同一 Vulkan，但 render world 线程隔离使 handle 导入复杂化，收益低）。
 
+## 帧率上限（2026-09：设置 → 显示效果）
+
+设置 → 显示效果 →「帧率上限」循环档：无限制 / 24 / 30 / 45 / 60 / 120。
+档位真源 = `n3ri-core` `config::FPS_TIER_HZ`（索引 = `UserSettings.fps_idx`，
+`fps_limit_hz(idx)` 取 Hz；0 = 无限制 = serde 默认，旧 JSON 自动回落无限制）。
+UI 文本由 `fps_label` 从同一数组衍生，勿另建标签清单。
+
+- **窗口模式**：`bevy_framepace 0.22`（bevy 0.19 对应版）。`FramepacePlugin` 在 render
+  子世界 `RenderSystems::Cleanup` 用 `spin_sleep` 睡眠主线程；改
+  `FramepaceSettings.limiter`（`Limiter::Off` = 无限制 / `Manual`）即下一帧生效。
+  `main.rs::sync_fps_limiter`（仅窗口模式注册）每帧把 `fps_idx` 镜像过去——
+  与插件自带的 `update_proxy_resources` 无显式排序约束，因此用「值不同才写」
+  而非 `is_changed` 门控，避免同步窗口竞态导致 proxy 永久停在旧档。
+- **壁纸模式**：**不要注册 FramepacePlugin**——reactive wait 与 render cleanup
+  spin_sleep 是两个叠加节流器，混用帧周期 = limit + wait（24fps 档实际 ~18fps）。
+  沿用 `wallpaper_frame_pace` 的 wait 治理：活动 wait = `round(1000/hz)` ms
+  （24→42、30→33、45→22、60→17、120→8），无限制维持 15ms（≈66fps 上限）；
+  静置档 = `max(活动, 33ms)`（≤30fps 档不再降频）。档位改变经 `user.is_changed()`
+  侦测、独立于输入立刻落新 wait（点击系统可能晚于本系统运行，勿只在活动分支换 wait）。
+
 ## Non-Goals（明确不做）
 
 ## Build & Run

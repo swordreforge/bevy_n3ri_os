@@ -37,6 +37,10 @@ pub struct UserSettings {
     pub volumes: [u8; 4],
     pub toggles: [bool; 4],
     pub quality_idx: usize,
+    /// 帧率上限档位（设置 → 显示效果 → 帧率上限）；索引见 [`FPS_TIER_HZ`]。
+    /// 0 = 无限制（默认：窗口模式不限帧；壁纸模式仍受 15ms Reactive wait ≈66fps 上限约束）。
+    #[serde(default)]
+    pub fps_idx: usize,
     /// 壁纸模式开关（设置 → 显示效果）；切换时主程序自我重启进入另一模式
     #[serde(default)]
     pub wallpaper_enabled: bool,
@@ -61,12 +65,29 @@ fn default_true() -> bool {
     true
 }
 
+/// 帧率上限档位（设置 → 显示效果 → 帧率上限），索引即 [`UserSettings::fps_idx`]。
+/// `None` = 无限制。
+pub const FPS_TIER_HZ: [Option<u32>; 6] = [
+    None,
+    Some(24),
+    Some(30),
+    Some(45),
+    Some(60),
+    Some(120),
+];
+
+/// fps_idx → 帧率上限（Hz）；`None` = 无限制。越界索引回落为 0（无限制）。
+pub fn fps_limit_hz(idx: usize) -> Option<f64> {
+    FPS_TIER_HZ.get(idx).copied().flatten().map(f64::from)
+}
+
 impl Default for UserSettings {
     fn default() -> Self {
         Self {
             volumes: [80, 71, 80, 100],
             toggles: [true, true, true, true],
             quality_idx: 0,
+            fps_idx: 0,
             wallpaper_enabled: false,
             natural_scroll: true,
             music_dir: None,

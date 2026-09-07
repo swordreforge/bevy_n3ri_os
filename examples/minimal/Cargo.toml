@@ -37,6 +37,8 @@ n3ri-ui = { path = "../../crates/n3ri-ui" }
 n3ri-agent = { path = "../../crates/n3ri-agent" }
 n3ri-live2d = { path = "../../crates/n3ri-live2d" }
 lofty = "0.22"
+# 帧率上限（设置 → 显示效果）：窗口模式主线程 Render cleanup 后 spin_sleep 精确限帧
+bevy_framepace = "0.22"
 # 壁纸模式：layer-shell 壁纸 surface + 全局指针卫星（XQueryPointer 轮询，触摸板/鼠标通吃）
 # vendored：本地补丁增加 wl_pointer.axis 滚动事件捕获（0.5.0 是最新版本，上游不处理 Axis）
 bevy_live_wallpaper = { path = "../../vendor/bevy_live_wallpaper", default-features = false, features = ["wayland"] }

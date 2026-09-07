@@ -27,6 +27,14 @@ const BAD_RED: Color = Color::srgb(0.9, 0.35, 0.35);
 const BUTTON_BORDER_COLOR: Color = Color::srgba(0.55, 0.65, 0.75, 0.5);
 
 const QUALITY_OPTIONS: [&str; 3] = ["极限性能", "平衡", "省电"];
+
+/// fps_idx → 档位显示文本（衍生自 FPS_TIER_HZ，避免双份清单漂移）。
+fn fps_label(idx: usize) -> String {
+    match n3ri_core::config::fps_limit_hz(idx) {
+        Some(hz) => format!("{hz}"),
+        None => "无限制".into(),
+    }
+}
 const TAB_LABELS: [(&str, &str); 8] = [
     ("sound", "声音"),
     ("music", "音乐"),
@@ -124,6 +132,7 @@ struct SettingsEntities {
     toggle_bg: [Option<Entity>; 4],
     toggle_knob: [Option<Entity>; 4],
     quality_label: Option<Entity>,
+    fps_label: Option<Entity>,
     net_status: Option<Entity>,
     net_latency: Option<Entity>,
     llm_text: [Option<Entity>; 5],
@@ -167,6 +176,9 @@ struct NaturalScrollToggle;
 
 #[derive(Component)]
 struct QualityButton;
+
+#[derive(Component)]
+struct FpsLimitButton;
 
 #[derive(Component)]
 struct PingButton;
@@ -255,6 +267,7 @@ impl Plugin for SettingsPlugin {
                     natural_scroll_toggle_click,
                     settings_slider_drag,
                     settings_quality_click,
+                    settings_fps_click,
                     settings_ping_click,
                     settings_poll,
                     settings_sync_ui,
@@ -1116,6 +1129,62 @@ fn spawn_display_page(
         })
         .with_children(|row| {
             row.spawn((
+                Text::new("帧率上限"),
+                TextFont {
+                    font: FontSource::Handle(fonts.default.clone()),
+                    font_size: FontSize::Px(14.0),
+                    ..default()
+                },
+                TextColor(TEXT_MAIN),
+            ));
+            row.spawn(Node {
+                width: Val::Px(60.0),
+                height: Val::Px(1.0),
+                ..default()
+            });
+            row.spawn((
+                Button,
+                FpsLimitButton,
+                Node {
+                    height: Val::Px(28.0),
+                    padding: UiRect::horizontal(Val::Px(12.0)),
+                    align_items: AlignItems::Center,
+                    justify_content: JustifyContent::Center,
+                    border_radius: BorderRadius::all(Val::Px(6.0)),
+                    border: UiRect::all(Val::Px(1.0)),
+                    ..default()
+                },
+                BorderColor::all(BUTTON_BORDER_COLOR),
+                BackgroundColor(Color::srgba(0.04, 0.08, 0.14, 0.8)),
+            ))
+            .with_children(|b| {
+                ents.fps_label = Some(
+                    b.spawn((
+                        Text::new(fps_label(settings.fps_idx)),
+                        TextFont {
+                            font: FontSource::Handle(fonts.default.clone()),
+                            font_size: FontSize::Px(13.0),
+                            ..default()
+                        },
+                        TextColor(TEXT_MAIN),
+                    ))
+                    .id(),
+                );
+            });
+        });
+
+        page.spawn(Node {
+            width: Val::Px(280.0),
+            height: Val::Px(44.0),
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::SpaceBetween,
+            padding: UiRect::all(Val::Px(12.0)),
+            border_radius: BorderRadius::all(Val::Px(8.0)),
+            border: UiRect::all(Val::Px(1.0)),
+            ..default()
+        })
+        .with_children(|row| {
+            row.spawn((
                 Text::new("壁纸模式"),
                 TextFont {
                     font: FontSource::Handle(fonts.default.clone()),
@@ -1659,6 +1728,25 @@ fn settings_quality_click(
     }
 }
 
+/// 帧率上限循环档（无限制→24→30→45→60→120）。保存后即时生效：
+/// 窗口模式 = main.rs 读 fps_idx 写 bevy_framepace::Limiter；
+/// 壁纸模式 = wallpaper_frame_pace 按 1000/hz 换算 winit Reactive wait。
+fn settings_fps_click(
+    mouse: Res<ButtonInput<MouseButton>>,
+    fps_query: Query<&Interaction, With<FpsLimitButton>>,
+    mut settings: ResMut<UserSettings>,
+) {
+    if !mouse.just_pressed(MouseButton::Left) {
+        return;
+    }
+    for interaction in fps_query.iter() {
+        if *interaction == Interaction::Pressed {
+            settings.fps_idx = (settings.fps_idx + 1) % n3ri_core::config::FPS_TIER_HZ.len();
+            settings.save();
+        }
+    }
+}
+
 fn settings_ping_click(
     mouse: Res<ButtonInput<MouseButton>>,
     ping_query: Query<&Interaction, With<PingButton>>,
@@ -1890,6 +1978,15 @@ fn settings_sync_ui(
     if let Some(label_e) = ents.quality_label {
         if let Ok(mut text) = text_query.get_mut(label_e) {
             let target = QUALITY_OPTIONS[settings.quality_idx].to_string();
+            if **text != target {
+                **text = target;
+            }
+        }
+    }
+
+    if let Some(label_e) = ents.fps_label {
+        if let Ok(mut text) = text_query.get_mut(label_e) {
+            let target = fps_label(settings.fps_idx);
             if **text != target {
                 **text = target;
             }

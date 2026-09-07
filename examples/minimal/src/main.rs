@@ -4,6 +4,7 @@ use bevy::log::DEFAULT_FILTER;
 use bevy::prelude::*;
 use bevy::ui::IsDefaultUiCamera;
 use bevy::window::PrimaryWindow;
+use bevy_framepace::{FramepacePlugin, FramepaceSettings, Limiter};
 use bevy_live_wallpaper::{LiveWallpaperCamera, LiveWallpaperPlugin};
 use n3ri_core::prelude::*;
 use n3ri_live2d::{
@@ -71,6 +72,33 @@ fn sync_pet_render_config(settings: Res<UserSettings>, mut config: ResMut<PetRen
     }
 }
 
+/// fps_idx → bevy_framepace 限帧器。0(无限制) = Limiter::Off，维持 AutoNoVsync 原帧行为。
+fn limiter_for_fps_idx(idx: usize) -> Limiter {
+    match n3ri_core::config::fps_limit_hz(idx) {
+        Some(hz) => Limiter::from_framerate(hz),
+        None => Limiter::Off,
+    }
+}
+
+fn same_limiter(a: &Limiter, b: &Limiter) -> bool {
+    match (a, b) {
+        (Limiter::Off, Limiter::Off) | (Limiter::Auto, Limiter::Auto) => true,
+        (Limiter::Manual(a), Limiter::Manual(b)) => a == b,
+        _ => false,
+    }
+}
+
+/// 设置页「帧率上限」→ UserSettings.fps_idx → 写 FramepaceSettings。
+/// FramepacePlugin 的 update_proxy_resources 每帧把该值同步进 render 子世界
+/// （RenderSystems::Cleanup 的 spin_sleep），下一帧即生效，无需重启。
+/// 仅窗口模式注册本系统（壁纸模式无 FramepacePlugin，走 wallpaper_frame_pace 的 wait 换算）。
+fn sync_fps_limiter(settings: Res<UserSettings>, mut fp: ResMut<FramepaceSettings>) {
+    let limiter = limiter_for_fps_idx(settings.fps_idx);
+    if !same_limiter(&fp.limiter, &limiter) {
+        fp.limiter = limiter;
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "-h" || a == "--help") {
@@ -134,6 +162,7 @@ fn run_windowed() {
         .add_plugins(n3ri_agent::AgentPlugin)
         .add_plugins(MusicPlayerPlugin)
         .add_plugins(n3ri_live2d::N3riLive2dPlugin)
+        .add_plugins(FramepacePlugin)
         .add_plugins(focus::FocusPlugin);
     // N3RI_PROF=1：控制台每 2s 打印进程 CPU/内存占用与真实帧率（fps/frame_time）。
     // 注：0.19 的 SystemInformationDiagnosticsPlugin 只统计系统/进程级利用率，
@@ -154,8 +183,10 @@ fn run_windowed() {
     }
     app.add_systems(Startup, spawn_camera)
         .add_systems(Startup, init_pet_render_config)
+        .add_systems(Startup, sync_fps_limiter)
         .add_systems(Update, (chat_rise_sync, chat_emotion_bridge))
         .add_systems(Update, sync_pet_render_config)
+        .add_systems(Update, sync_fps_limiter)
         .add_systems(OnEnter(OsState::Boot), spawn_boot_screen)
         .add_systems(
             Update,
@@ -317,6 +348,10 @@ fn spawn_wallpaper_camera(mut commands: Commands) {
 /// 追平与窗口模式的差距并减半 page fault 建页开销。任一输入即恢复。
 /// 只在 Desktop 降频，Boot/Loading 保持全速。壁纸模式无主窗，
 /// focused/unfocused 两档必须一起改（focused 判定不可靠）。
+/// 「帧率上限」档位在此生效：活动 wait = 1000/hz（24→42ms、30→33ms…），
+/// 无限制维持 15ms；静置档 = 活动档与 33ms 的下限取大（≤30fps 档不再降频）。
+/// 壁纸模式不用 bevy_framepace——reactive wait 与 render cleanup spin_sleep 是
+/// 两个叠加节流器，混用会让实际帧周期 = limit + wait（例：24fps 档变 ~18fps）。
 const WALLPAPER_ACTIVE_WAIT_MS: u64 = 15;
 const WALLPAPER_IDLE_WAIT_MS: u64 = 33;
 const WALLPAPER_IDLE_TIMEOUT_SECS: f32 = 3.0;
@@ -325,6 +360,19 @@ const WALLPAPER_IDLE_TIMEOUT_SECS: f32 = 3.0;
 struct WallpaperFramePace {
     last_active_secs: f32,
     downclocked: bool,
+}
+
+/// fps_idx → 壁纸模式 winit Reactive wait（毫秒）。
+fn wallpaper_wait_ms(user: &UserSettings, active: bool) -> u64 {
+    let active_ms = match n3ri_core::config::fps_limit_hz(user.fps_idx) {
+        Some(hz) => (1000.0 / hz).round().clamp(1.0, 1000.0) as u64,
+        None => WALLPAPER_ACTIVE_WAIT_MS,
+    };
+    if active {
+        active_ms
+    } else {
+        active_ms.max(WALLPAPER_IDLE_WAIT_MS)
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -337,7 +385,8 @@ fn wallpaper_frame_pace(
     keyboard: MessageReader<KeyboardInput>,
     ime: MessageReader<Ime>,
     wheel: MessageReader<MouseWheel>,
-    mut settings: ResMut<bevy::winit::WinitSettings>,
+    user: Res<UserSettings>,
+    mut winit_settings: ResMut<bevy::winit::WinitSettings>,
     mut pace: ResMut<WallpaperFramePace>,
 ) {
     fn set_wait(settings: &mut bevy::winit::WinitSettings, ms: u64) {
@@ -355,7 +404,18 @@ fn wallpaper_frame_pace(
         }
     }
 
+    let active_wait = wallpaper_wait_ms(&user, true);
+    let idle_wait = wallpaper_wait_ms(&user, false);
+
     let now = time.elapsed_secs();
+    // 设置页切换「帧率上限」：change tick 独立于输入，直接落新 wait（保持当前活动/静置档），
+    // 不必等下一次输入才生效。
+    if user.is_changed() {
+        set_wait(
+            &mut winit_settings,
+            if pace.downclocked { idle_wait } else { active_wait },
+        );
+    }
     // MessageReader 是广播语义：is_empty 只读游标不消费，各消费方互不干扰。
     let active = cursor.is_changed()
         || frame.scroll != Vec2::ZERO
@@ -371,7 +431,7 @@ fn wallpaper_frame_pace(
     if active {
         pace.last_active_secs = now;
         if pace.downclocked {
-            set_wait(&mut settings, WALLPAPER_ACTIVE_WAIT_MS);
+            set_wait(&mut winit_settings, active_wait);
             pace.downclocked = false;
         }
         return;
@@ -380,7 +440,7 @@ fn wallpaper_frame_pace(
         && !pace.downclocked
         && now - pace.last_active_secs > WALLPAPER_IDLE_TIMEOUT_SECS
     {
-        set_wait(&mut settings, WALLPAPER_IDLE_WAIT_MS);
+        set_wait(&mut winit_settings, idle_wait);
         pace.downclocked = true;
     }
 }

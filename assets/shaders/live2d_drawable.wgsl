@@ -10,11 +10,11 @@
 //                              (white / black are the neutral values)
 //   vp.xy  = mask RTT size in pixels
 //
-// Masking mirrors live2d-viewer's FBO approach:
+// Masking mirrors live2d-viewer's FBO approach, with channel packing:
 //   1. Mask camera clears mask RTT to WHITE (alpha=1 → outside mask)
-//   2. Mask shapes drawn as vec4(0,0,0, textureAlpha) — alpha stores mask value
-//   3. Masked drawables sample mask RTT at framebuffer coords
-//   4. maskFactor = 1.0 - maskAlpha (white=hidden, transparent=visible)
+//   2. Mask shapes written per-lane (write_mask = R/G/B/A per group)
+//   3. 打包：4 个 mask 组共享一张 RTT 的 RGBA 四通道，`u.vp.z` = 本组通道号
+//   4. maskFactor = 1.0 - laneValue (white=hidden, transparent=visible)
 
 #import bevy_sprite::mesh2d_vertex_output::VertexOutput
 
@@ -37,8 +37,10 @@ fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
 
     // Mask-camera pass: output mask shape alpha as the mask value.
     // Convention (matches Cubism SDK / live2d-viewer): FBO cleared to WHITE
-    // (alpha=1 → outside mask → fully hidden). Mask shapes store their texture
-    // alpha in the output alpha channel so masked drawables can sample it.
+    // (alpha=1 → outside mask → fully hidden). The pipeline `write_mask`
+    // routes the blended result into this group's own lane only — same output
+    // for every lane, the target mask selects R/G/B/A. Other lanes untouched,
+    // so 4 groups sharing one RTT never clobber each other.
     if (u.flags.z > 0.5) {
         return vec4(0.0, 0.0, 0.0, c.a);
     }
@@ -74,10 +76,20 @@ fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
             1.0 - mesh.world_position.y / u.vp.y,
         );
         let m = textureSample(mask_tex, mask_samp, mask_uv);
+        // 打包 RTT：本组 mask 存在 `u.vp.z` 通道（0=R..3=A），只读自己那条。
+        let lane = i32(u.vp.z + 0.5);
+        var mask_alpha = m.a;
+        if (lane == 0) {
+            mask_alpha = m.r;
+        } else if (lane == 1) {
+            mask_alpha = m.g;
+        } else if (lane == 2) {
+            mask_alpha = m.b;
+        }
         // SDK convention (csmIsInvertedMask): normal drawables are visible
         // OUTSIDE the mask shape (1 - alpha); inverted drawables INSIDE it.
         // Reference live2d-viewer: mix(1.0 - maskAlpha, maskAlpha, uInvertMask)
-        let mask_factor = mix(1.0 - m.a, m.a, u.flags.w);
+        let mask_factor = mix(1.0 - mask_alpha, mask_alpha, u.flags.w);
         alpha = alpha * mask_factor;
     }
 

@@ -3,7 +3,8 @@
 //! Pipeline (mirrors live2d-viewer's FBO masking, rebuilt on Bevy/wgpu):
 //!
 //! ```text
-//! mask cameras (per-group, order -(30+g)) ──▶ mask RTTs  (one per mask group)
+//! mask cameras (packed, 4 groups/unit, order -(30+p)) ──▶ mask RTTs (one per unit,
+//!                                                        RGBA lanes = 4 groups)
 //! pet camera   (order -10, layer 1)        ──▶ pet RTT   (drawables sorted by z,
 //!                                                          masked ones sample group RTT)
 //! UI ImageNode ───────────────────────────▶ displays pet RTT below app windows
@@ -27,7 +28,7 @@ use bevy::math::{Vec2, Vec4};
 use bevy::mesh::{Indices, Mesh, Mesh2d, PrimitiveTopology, VertexAttributeValues};
 use bevy::prelude::*;
 use bevy::render::render_resource::{
-    AsBindGroup, BlendComponent, BlendFactor, BlendOperation, BlendState, Extent3d,
+    AsBindGroup, BlendComponent, BlendFactor, BlendOperation, BlendState, ColorWrites, Extent3d,
     RenderPipelineDescriptor, SpecializedMeshPipelineError, TextureDimension, TextureFormat,
 };
 use bevy::render::view::Msaa;
@@ -120,8 +121,12 @@ enum BlendKind {
     Normal,
     Additive,
     Multiplicative,
-    MaskFbo,
+    /// mask 写入：`lane` 指定输出的 RGBA 通道（0=R..3=A），同单元 4 组各占一通道。
+    MaskLane(u8),
 }
+
+/// 打包单元容量：RGB 四通道。
+const MASK_LANES: usize = 4;
 
 impl BlendKind {
     fn from_core(mode: i32) -> Self {
@@ -172,7 +177,7 @@ impl BlendKind {
                     operation: BlendOperation::Add,
                 },
             },
-            Self::MaskFbo => BlendState {
+            Self::MaskLane(_) => BlendState {
                 color: BlendComponent {
                     src_factor: BlendFactor::One,
                     dst_factor: BlendFactor::OneMinusSrcAlpha,
@@ -186,6 +191,18 @@ impl BlendKind {
             },
         }
     }
+
+    /// mask 写入通道掩码：同单元 4 组各写各的通道，互不干扰。
+    /// 非 mask 管线走不到这里（`specialize` 只对 `MaskLane` 设掩码），给 ALL 兜底。
+    fn write_mask(self) -> ColorWrites {
+        match self {
+            Self::MaskLane(0) => ColorWrites::RED,
+            Self::MaskLane(1) => ColorWrites::GREEN,
+            Self::MaskLane(2) => ColorWrites::BLUE,
+            Self::MaskLane(_) => ColorWrites::ALPHA,
+            Self::Normal | Self::Additive | Self::Multiplicative => ColorWrites::ALL,
+        }
+    }
 }
 
 #[derive(bevy::render::render_resource::ShaderType, Clone, Copy)]
@@ -194,7 +211,8 @@ struct Live2dUniforms {
     flags: Vec4,
     multiply_color: Vec4,
     screen_color: Vec4,
-    /// xy = mask RTT pixel size.
+    /// xy = mask RTT pixel size；z = mask 通道（0=R..3=A，仅 masked drawable 有效，
+    /// 打包后的 mask RTT 按通道存放 4 组），w unused。
     viewport: Vec4,
 }
 
@@ -242,6 +260,10 @@ impl Material2d for Live2dDrawableMaterial {
         if let Some(fragment) = descriptor.fragment.as_mut() {
             if let Some(Some(target)) = fragment.targets.first_mut() {
                 target.blend = Some(blend_state);
+                // mask 写入只动自己那条通道；主绘制管线保持默认 ALL 掩码。
+                if let BlendKind::MaskLane(_) = key.bind_group_data.blend {
+                    target.write_mask = key.bind_group_data.blend.write_mask();
+                }
             }
         }
         Ok(())
@@ -297,6 +319,8 @@ struct MaskGroup {
     _camera_entity: Entity,
     _mask_entities: Vec<(Entity, usize)>,
     _rtt_handle: Handle<Image>,
+    /// 打包后的 RTT 通道（0=R..3=A），采样时从 `viewport.z` 读回。
+    lane: u8,
 }
 
 #[derive(Resource)]
@@ -541,8 +565,10 @@ pub fn load_and_setup_pet(world: &mut World) {
         group_sources[g] = set.clone();
     }
 
-    let mut group_rtts: Vec<Handle<Image>> = Vec::with_capacity(num_groups);
-    for (g, sources) in group_sources.iter().enumerate() {
+    let mut group_rtts: Vec<Handle<Image>> = vec![Handle::default(); num_groups];
+    // 4 组打包进一张 RTT 的 RGB 四通道：25 组 → 7 个单元（RTT+相机+pass），
+    // 同单元 4 组各写各的通道（见 `BlendKind::write_mask`），互不干扰。
+    for (p, chunk) in group_sources.chunks(MASK_LANES).enumerate() {
         let rtt_h = world
             .resource_mut::<Assets<Image>>()
             .add(Image::new_target_texture(
@@ -555,14 +581,13 @@ pub fn load_and_setup_pet(world: &mut World) {
             img.sampler = ImageSampler::linear();
             rt_drop_cpu_data(&mut img);
         }
-        group_rtts.push(rtt_h.clone());
 
-        let layer = 10 + g;
+        let layer = 10 + p;
         let cam = world
             .spawn((
                 Camera2d,
                 Camera {
-                    order: -(30 + g as isize),
+                    order: -(30 + p as isize),
                     clear_color: ClearColorConfig::Custom(Color::WHITE),
                     ..default()
                 },
@@ -573,45 +598,51 @@ pub fn load_and_setup_pet(world: &mut World) {
             ))
             .id();
 
-        let mut mask_entities = Vec::with_capacity(sources.len());
-        for &src_idx in sources {
-            // Cubism masks sample their own texture alpha — never share one
-            // flat-fill material across mask sources.
-            let src_tex = texture_handles
-                .get(tex_idx[src_idx].max(0) as usize)
-                .cloned()
-                .unwrap_or_else(|| white_h.clone());
-            let mat_h = world
-                .resource_mut::<Assets<Live2dDrawableMaterial>>()
-                .add(Live2dDrawableMaterial {
-                    uniforms: Live2dUniforms {
-                        flags: Vec4::new(1.0, 0.0, 1.0, 0.0),
-                        multiply_color: Vec4::ONE,
-                        screen_color: Vec4::ZERO,
-                        viewport: Vec4::new(view_w as f32, view_h as f32, 0.0, 0.0),
-                    },
-                    texture: src_tex,
-                    mask_texture: white_h.clone(),
-                    blend: BlendKind::MaskFbo,
-                });
-            let entity = world
-                .spawn((
-                    Mesh2d(mesh_handles[src_idx].clone()),
-                    MeshMaterial2d(mat_h),
-                    Transform::from_xyz(0.0, 0.0, src_idx as f32),
-                    RenderLayers::layer(layer),
-                ))
-                .id();
-            mask_entities.push((entity, src_idx));
-        }
+        for (lane, sources) in chunk.iter().enumerate() {
+            let g = p * MASK_LANES + lane;
+            group_rtts[g] = rtt_h.clone();
 
-        mask_groups.push(MaskGroup {
-            mask_source_indices: sources.clone(),
-            _layer: layer,
-            _camera_entity: cam,
-            _mask_entities: mask_entities,
-            _rtt_handle: rtt_h,
-        });
+            let mut mask_entities = Vec::with_capacity(sources.len());
+            for &src_idx in sources.iter() {
+                // Cubism masks sample their own texture alpha — never share one
+                // flat-fill material across mask sources.
+                let src_tex = texture_handles
+                    .get(tex_idx[src_idx].max(0) as usize)
+                    .cloned()
+                    .unwrap_or_else(|| white_h.clone());
+                let mat_h = world
+                    .resource_mut::<Assets<Live2dDrawableMaterial>>()
+                    .add(Live2dDrawableMaterial {
+                        uniforms: Live2dUniforms {
+                            flags: Vec4::new(1.0, 0.0, 1.0, 0.0),
+                            multiply_color: Vec4::ONE,
+                            screen_color: Vec4::ZERO,
+                            viewport: Vec4::new(view_w as f32, view_h as f32, 0.0, 0.0),
+                        },
+                        texture: src_tex,
+                        mask_texture: white_h.clone(),
+                        blend: BlendKind::MaskLane(lane.min(3) as u8),
+                    });
+                let entity = world
+                    .spawn((
+                        Mesh2d(mesh_handles[src_idx].clone()),
+                        MeshMaterial2d(mat_h),
+                        Transform::from_xyz(0.0, 0.0, src_idx as f32),
+                        RenderLayers::layer(layer),
+                    ))
+                    .id();
+                mask_entities.push((entity, src_idx));
+            }
+
+            mask_groups.push(MaskGroup {
+                mask_source_indices: sources.to_vec(),
+                _layer: layer,
+                _camera_entity: cam,
+                _mask_entities: mask_entities,
+                _rtt_handle: rtt_h.clone(),
+                lane: lane.min(3) as u8,
+            });
+        }
     }
 
     {
@@ -620,6 +651,8 @@ pub fn load_and_setup_pet(world: &mut World) {
             if let Some(g) = drawable_group[i] {
                 if let Some(mut mat) = materials.get_mut(&mat_handles[i]) {
                     mat.mask_texture = group_rtts[g].clone();
+                    // 采样通道 = 该组在打包单元里的 lane，经 viewport.z 传给 shader。
+                    mat.uniforms.viewport.z = mask_groups[g].lane as f32;
                 }
             }
         }
@@ -759,7 +792,9 @@ pub(crate) fn refit_pet_view(
         }
         for (_, _, _, mat_h) in &render_rig.slots {
             if let Some(mut mat) = materials.get_mut(mat_h) {
-                mat.uniforms.viewport = Vec4::new(w as f32, h as f32, 0.0, 0.0);
+                // 只更新尺寸，保留 viewport.z 的 mask 通道号（打包单元的 lane）。
+                mat.uniforms.viewport.x = w as f32;
+                mat.uniforms.viewport.y = h as f32;
             }
         }
     }
@@ -794,6 +829,7 @@ fn read_vec4(ptr: *const f32) -> Vec4 {
 /// 1. 材质先 `get` 读比对，变化才 `get_mut` —— `AssetMut::DerefMut` 一触即
 ///    发 `Modified`，无条件写会让 render world 每帧重建全部 BindGroup；
 /// 2. 顶点直写 mesh 缓冲，不再经 `Local` scratch 中转（省一次 push+copy）。
+///
 /// 查询收窄到 `PetDrawable`，不再 `With<Mesh2d>` 扫全场 UI 网格。
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn sync_live2d(

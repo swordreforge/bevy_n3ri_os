@@ -57,6 +57,7 @@ impl Plugin for N3riLive2dPlugin {
             .init_resource::<head_anim::HeadDisplayWanted>()
             .init_resource::<renderer::PetTargetArea>()
             .init_resource::<renderer::PetRenderConfig>()
+            .init_resource::<renderer::PetTickState>()
             .add_plugins(Material2dPlugin::<Live2dDrawableMaterial>::default())
             .add_plugins(TweeningPlugin)
             .add_systems(Startup, renderer::load_and_setup_pet)
@@ -66,7 +67,9 @@ impl Plugin for N3riLive2dPlugin {
                     renderer::tick_pet.run_if(renderer::pet_display_on),
                     renderer::refit_pet_view,
                     renderer::gate_pet_cameras,
-                    renderer::sync_live2d.run_if(renderer::pet_display_on),
+                    renderer::sync_live2d.run_if(
+                        renderer::pet_display_on.and_eager(renderer::pet_tick_done),
+                    ),
                 )
                     .chain(),
             )

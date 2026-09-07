@@ -804,14 +804,42 @@ pub(crate) fn refit_pet_view(
     info!("live2d rtt refit: {w}x{h} (logical {}x{})", target.logical.x, target.logical.y);
 }
 
-pub fn tick_pet(mut pet: NonSendMut<Live2dPet>, time: Res<Time>) {
-    pet.tick(time.delta_secs(), time.elapsed_secs());
+pub fn tick_pet(
+    mut pet: NonSendMut<Live2dPet>,
+    time: Res<Time>,
+    mut state: ResMut<PetTickState>,
+) {
+    state.acc += time.delta_secs();
+    state.ticked = false;
+    if state.acc < PET_TICK_INTERVAL {
+        return;
+    }
+    // 累积 dt 一次推进：总推进量 == 逐帧 tick 之和，动作速度不变。
+    let dt = std::mem::replace(&mut state.acc, 0.0);
+    pet.tick(dt, time.elapsed_secs());
+    state.ticked = true;
+}
+
+/// tick 降频状态：`csmiUpdateModel`（主线程 ~4%，闭源 Core 改不动）+
+/// 全量顶点上传（FreeList ~10%）都不必逐帧。30Hz 累积推进，
+/// `sync_live2d` 同拍，只在 tick 帧上传。
+pub const PET_TICK_INTERVAL: f32 = 1.0 / 30.0;
+
+#[derive(Resource, Default)]
+pub struct PetTickState {
+    acc: f32,
+    ticked: bool,
 }
 
 /// 宠物显示节点挂载且未被显式隐藏时才驱动整条渲染链（启动/加载阶段宠物未
 /// 挂载、或桌面显式隐藏宠物时跳过模型 tick/网格/材质同步，避免后台空转）。
 pub(crate) fn pet_display_on(display: Query<&Visibility, With<PetDisplayNode>>) -> bool {
     display.iter().any(|v| *v != Visibility::Hidden)
+}
+
+/// tick 帧才做上传：`PetTickState.ticked` 由同链上游 `tick_pet` 置位。
+pub(crate) fn pet_tick_done(state: Res<PetTickState>) -> bool {
+    state.ticked
 }
 
 fn read_vec4(ptr: *const f32) -> Vec4 {

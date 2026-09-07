@@ -29,7 +29,9 @@ impl Plugin for ChatCapsulePlugin {
             .add_systems(Update, chat_capsule_animate)
             .add_systems(
                 Update,
-                chat_capsule_input.after(chat_capsule_interact),
+                chat_capsule_input
+                    .after(chat_capsule_interact)
+                    .after(chat_capsule_ime),
             )
             .add_systems(Update, chat_capsule_ime.after(chat_capsule_interact))
             .add_systems(Update, chat_capsule_cursor_blink)
@@ -454,12 +456,16 @@ fn chat_capsule_animate(
             if state.input_text.is_empty() && !state.composing {
                 PLACEHOLDER.to_string()
             } else if state.composing {
-                let before: String = state.input_text.chars().take(state.cursor_pos).collect();
-                let after: String = state.input_text.chars().skip(state.cursor_pos).collect();
+                let pos = state.cursor_pos.min(state.input_text.chars().count());
+                let before: String = state.input_text.chars().take(pos).collect();
+                let after: String = state.input_text.chars().skip(pos).collect();
                 format!("{}{}{}", before, state.preedit_text, after)
             } else {
                 let cursor = if state.cursor_visible { "│" } else { "" };
-                format!("{}{}", state.input_text, cursor)
+                let pos = state.cursor_pos.min(state.input_text.chars().count());
+                let before: String = state.input_text.chars().take(pos).collect();
+                let after: String = state.input_text.chars().skip(pos).collect();
+                format!("{before}{cursor}{after}")
             }
         } else {
             PLACEHOLDER.to_string()
@@ -521,8 +527,13 @@ fn chat_capsule_input(
     }
 
     if state.composing {
+        keyboard_inputs.clear();
         return;
     }
+
+    state.cursor_pos = state
+        .cursor_pos
+        .min(state.input_text.chars().count());
 
     for event in keyboard_inputs.read() {
         if !event.state.is_pressed() {
@@ -530,10 +541,16 @@ fn chat_capsule_input(
         }
 
         let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
+        let char_count = state.input_text.chars().count();
+        if state.cursor_pos > char_count {
+            state.cursor_pos = char_count;
+        }
 
         match &event.logical_key {
             Key::Character(ch) => {
-                let raw = ch.chars().next().unwrap();
+                let Some(raw) = ch.chars().next() else {
+                    continue;
+                };
                 let c = if ctrl && raw.is_ascii_alphabetic() {
                     (raw.to_ascii_uppercase() as u8 & 0x1f) as char
                 } else {
@@ -545,8 +562,18 @@ fn chat_capsule_input(
                         .map(|(i, _)| i)
                         .unwrap_or(state.input_text.len());
                     state.input_text.insert(byte_pos, c);
-                    state.cursor_pos += 1;
+                    state.cursor_pos = state.cursor_pos.saturating_add(1);
                 }
+            }
+            Key::Space => {
+                let byte_pos = state
+                    .input_text
+                    .char_indices()
+                    .nth(state.cursor_pos)
+                    .map(|(i, _)| i)
+                    .unwrap_or(state.input_text.len());
+                state.input_text.insert(byte_pos, ' ');
+                state.cursor_pos = state.cursor_pos.saturating_add(1);
             }
             Key::Enter => {
                 let input = state.input_text.clone();
@@ -559,12 +586,12 @@ fn chat_capsule_input(
             }
             Key::Backspace => {
                 if state.cursor_pos > 0 {
-                    state.cursor_pos -= 1;
-                    let byte_pos = state.input_text.char_indices()
-                        .nth(state.cursor_pos)
-                        .map(|(i, _)| i)
-                        .unwrap_or(state.input_text.len());
-                    state.input_text.remove(byte_pos);
+                    state.cursor_pos = state.cursor_pos.saturating_sub(1);
+                    if let Some((byte_pos, _)) =
+                        state.input_text.char_indices().nth(state.cursor_pos)
+                    {
+                        state.input_text.remove(byte_pos);
+                    }
                 }
             }
             Key::Delete => {
@@ -580,8 +607,9 @@ fn chat_capsule_input(
                 state.cursor_pos = state.cursor_pos.saturating_sub(1);
             }
             Key::ArrowRight => {
-                if state.cursor_pos < state.input_text.chars().count() {
-                    state.cursor_pos += 1;
+                let len = state.input_text.chars().count();
+                if state.cursor_pos < len {
+                    state.cursor_pos = state.cursor_pos.saturating_add(1);
                 }
             }
             Key::Home => state.cursor_pos = 0,
@@ -619,12 +647,15 @@ fn chat_capsule_ime(
                 state.preedit_text.clear();
                 state.preedit_cursor = None;
 
-                let byte_pos = state.input_text.char_indices()
-                    .nth(state.cursor_pos)
+                let pos = state.cursor_pos.min(state.input_text.chars().count());
+                let byte_pos = state
+                    .input_text
+                    .char_indices()
+                    .nth(pos)
                     .map(|(i, _)| i)
                     .unwrap_or(state.input_text.len());
                 state.input_text.insert_str(byte_pos, value);
-                state.cursor_pos += value.chars().count();
+                state.cursor_pos = pos.saturating_add(value.chars().count());
             }
             Ime::Enabled { .. } => {
                 state.composing = false;

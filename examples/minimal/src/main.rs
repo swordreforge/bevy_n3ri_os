@@ -137,6 +137,17 @@ fn sync_msaa(settings: Res<UserSettings>, mut cameras: Query<&mut Msaa, With<UiM
     }
 }
 
+/// 启动时把 `UserSettings.wallpaper_enabled` 对齐到真实启动模式（CLI `--wallpaper`）。
+/// 设置页「显示效果 → 壁纸模式」开关只读该字段；直接用 CLI 进壁纸模式时文件仍是
+/// 旧值会导致开关显示为关闭。N3riCorePlugin 在之后 load()，读到的即已对齐的值。
+fn sync_wallpaper_setting(actual_wallpaper: bool) {
+    let mut settings = UserSettings::load();
+    if settings.wallpaper_enabled != actual_wallpaper {
+        settings.wallpaper_enabled = actual_wallpaper;
+        settings.save();
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "-h" || a == "--help") {
@@ -147,8 +158,10 @@ fn main() {
         std::process::exit(run_satellite());
     }
     if args.iter().any(|a| a == "--wallpaper") {
+        sync_wallpaper_setting(true);
         run_wallpaper();
     } else {
+        sync_wallpaper_setting(false);
         run_windowed();
     }
 }

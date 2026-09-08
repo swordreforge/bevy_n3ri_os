@@ -2,6 +2,7 @@
 *.swp
 *.swo
 *~
+perf/
 *.txt
 .DS_Store
 .omo/

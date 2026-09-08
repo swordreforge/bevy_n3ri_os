@@ -25,9 +25,9 @@
 | `reqwest` | `0.12.28` | `0.12`, `blocking,json,rustls-tls`, no native-tls | LLM client |
 | `smol_str` | `0.2.2` | `0.2` | UI strings |
 
-Rust workspace: `resolver = "2"`, members `n3ri-core, n3ri-llm, n3ri-ui, n3ri-live2d, examples/minimal`.
-Commented out (not members): `n3ri-render, n3ri-audio, n3ri-apps`. Live2D FFI (`crates/live2d-rs/*`,
-Cubism SDK dirs) are a nested workspace / non-members.
+Rust workspace: `resolver = "2"`, members `n3ri-core, n3ri-llm, n3ri-ui, n3ri-live2d, examples/minimal`
+(includes `mocari` from crates.io as pure-Rust Live2D runtime).
+Commented out (not members): `n3ri-render, n3ri-audio, n3ri-apps`.
 
 ---
 

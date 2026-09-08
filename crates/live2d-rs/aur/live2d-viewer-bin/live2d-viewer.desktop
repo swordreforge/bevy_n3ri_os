@@ -1,8 +1,0 @@
-[Desktop Entry]
-Type=Application
-Name=Live2D Viewer
-Comment=Desktop pet viewer for Live2D Cubism V3/V2 models
-Exec=live2d-viewer
-Icon=live2d-viewer
-Terminal=false
-Categories=Graphics;Viewer;

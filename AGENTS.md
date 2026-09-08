@@ -142,8 +142,8 @@ assets/shaders/     # WGSL shaders (desktop_background.wgsl)
   Message 广播语义下同一帧双重响应。滚动条轨道是滚动容器子节点，靠
   `IgnoreScroll(BVec2::new(false, true))` 钉住不被父滚动平移。
 
-Commented-out crates (not in workspace): `n3ri-render`, `n3ri-audio`, `n3ri-live2d`, `n3ri-apps`.
-Live2D FFI crates exist in `crates/` but are not workspace members.
+Commented-out crates (not in workspace): `n3ri-render`, `n3ri-audio`, `n3ri-apps`.
+Live2D 跑在 `mocari` 纯 Rust 运行时上（无 FFI、无 Native SDK），`n3ri-live2d` 是正式 workspace 成员。
 
 ## Critical Gotchas
 

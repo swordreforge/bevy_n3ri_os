@@ -29,7 +29,7 @@ Bevy 0.19 的 UI 系统构建在 taffy 之上，rust的版本的浏览器引擎�
 
 ### Live2D 桌面宠物
 
-集成 `live2d-rs` 绑定（Cubism V3），支持：
+集成 `mocari` 纯 Rust 运行时（Cubism V3，无 FFI），支持：
 
 - 桌面宠物显示与遮挡检测（窗口遮住宠物时自动切换为头部气泡显示）
 - 表情切换（Happy、Sad、Angry、Surprised、Confused、Proud、Shy、Tired、Neutral）
@@ -79,8 +79,7 @@ n3ri_os/
 │   ├── n3ri-core/       # 状态机、事件、配置 — 无渲染依赖
 │   ├── n3ri-ui/         # 所有 UI：Dock、Topbar、窗口管理、应用、Shader
 │   ├── n3ri-llm/        # OpenAI 兼容 Chat Completion 客户端
-│   ├── n3ri-live2d/     # Live2D 桌面宠物（基于 live2d-rs）
-│   └── live2d-rs/       # Rust bindings（独立子项目）
+│   ├── n3ri-live2d/     # Live2D 桌面宠物（mocari 纯 Rust 运行时）
 ├── examples/minimal/    # 可运行的二进制入口
 └── assets/              # 字体、图标、纹理、Shader、音频
 ```
@@ -91,7 +90,6 @@ n3ri_os/
 
 - **Linux + Wayland**（推荐 niri 桌面环境，可获得最佳窗口位置对齐体验）
 - **Rust 1.75+**
-- **Live2D Cubism 5.x SDK** — 下载后放置于 `crates/CubismSdkForNative-5-r.5/`（如需 Live2D 功能）
 
 ### 编译运行
 
@@ -124,11 +122,11 @@ cargo run -p n3ri-minimal --features embed-assets
 | [reqwest](https://github.com/seanmonstar/reqwest) | seanmonstar | HTTP 客户端（LLM 通信） |
 | [icu\_provider](https://github.com/unicode-org/icu4x) | Unicode / ICU4X | 文本分段（中文支持） |
 | [serde](https://github.com/serde-rs/serde) | dtolnay | 序列化框架 |
-| [live2d-rs](https://github.com/swordreforge/live2d-rs) | swordreforge（本项目作者） | Live2D Cubism Rust 绑定 |
+| [mocari](https://github.com/Eatgrapes/Mocari) | Eatgrapes | Live2D Cubism 纯 Rust 运行时 |
 
-### 关于 Live2D 绑定
+### 关于 Live2D 运行时
 
-`live2d-rs` 是 Live2D Cubism SDK for Native 的 Rust 语言绑定，由本项目作者独立开发。它是对 Live2D 官方 C API 的 FFI 封装，**与 Live2D Inc. 官方无关**，不代表 Live2D Inc. 的立场或产品。Live2D、Cubism 是 Live2D Inc. 的注册商标。
+`mocari` 是 Live2D Cubism 兼容模型的纯 Rust 实现（`#![forbid(unsafe_code)]`），无需官方 Native SDK、无 FFI。Live2D、Cubism 是 Live2D Inc. 的注册商标，本项目与其无关。
 
 ## License
 

@@ -129,12 +129,11 @@ enum BlendKind {
 const MASK_LANES: usize = 4;
 
 impl BlendKind {
-    fn from_core(mode: i32) -> Self {
+    fn from_mocari(mode: mocari::moc3::Moc3DrawableBlendMode) -> Self {
         match mode {
-            1 => Self::Additive,
-            // TEMP hack for hollow-interior diagnosis; revert to Self::Multiplicative.
-            2 => Self::Normal,
-            _ => Self::Normal,
+            mocari::moc3::Moc3DrawableBlendMode::Additive => Self::Additive,
+            mocari::moc3::Moc3DrawableBlendMode::Multiplicative => Self::Multiplicative,
+            mocari::moc3::Moc3DrawableBlendMode::Normal => Self::Normal,
         }
     }
 
@@ -460,23 +459,25 @@ pub fn load_and_setup_pet(world: &mut World) {
     world.insert_resource(PetHeadImage(Some(head_image_h)));
 
     let mapping = PetMapping::compute(pet.vertex_bbox(), view_w, view_h);
-    let d = pet.model.drawables();
-    let vcounts = d.vertex_counts().to_vec();
-    let uvs_ptrs = d.vertex_uvs().to_vec();
-    let idx_counts = d.index_counts().to_vec();
-    let idx_ptrs = d.indices().to_vec();
-    let tex_idx = d.texture_indices().to_vec();
-    let blend_modes = d.blend_modes().to_vec();
-    let mask_counts = d.mask_counts().to_vec();
-    let masks_ptrs = d.masks().to_vec();
+    let meshes = pet.runtime.meshes();
+    let count = meshes.len();
+    let vcounts: Vec<usize> = meshes.iter().map(|m| m.vertices().len()).collect();
+    let uvs: Vec<Vec<[f32; 2]>> = meshes
+        .iter()
+        .map(|m| m.vertices().iter().map(|v| v.uv()).collect())
+        .collect();
+    let indices: Vec<Vec<u16>> =
+        meshes.iter().map(|m| m.indices().to_vec()).collect();
+    let tex_idx: Vec<i32> = meshes.iter().map(|m| m.texture_index()).collect();
+    let blend_modes: Vec<mocari::moc3::Moc3DrawableBlendMode> =
+        meshes.iter().map(|m| m.blend_mode()).collect();
+    let masks: Vec<Vec<i32>> = meshes.iter().map(|m| m.masks().to_vec()).collect();
 
     let mut mask_set_to_group: HashMap<Vec<usize>, usize> = HashMap::new();
     let mut drawable_group: Vec<Option<usize>> = vec![None; count];
     for i in 0..count {
-        if mask_counts[i] > 0 {
-            let mut set: Vec<usize> = (0..mask_counts[i].max(0) as usize)
-                .map(|m| unsafe { *masks_ptrs[i].add(m) as usize })
-                .collect();
+        if !masks[i].is_empty() {
+            let mut set: Vec<usize> = masks[i].iter().map(|&m| m as usize).collect();
             set.sort();
             let g = mask_set_to_group.len();
             let entry = mask_set_to_group.entry(set).or_insert(g);
@@ -493,13 +494,12 @@ pub fn load_and_setup_pet(world: &mut World) {
 
     let prepared: Vec<Prepared> = (0..count)
         .map(|i| {
-            let n = vcounts[i].max(0) as usize;
-            let uv_slice = unsafe { std::slice::from_raw_parts(uvs_ptrs[i], n) };
-            let uvs: Vec<[f32; 2]> = uv_slice.iter().map(|p| [p.X, 1.0 - p.Y]).collect();
+            let n = vcounts[i];
+            // mocari UVs are already in Bevy orientation (compare probe:
+            // mocari.uv.y == 1 - Core.uv.y) — pass through, no flip.
+            let uvs = uvs[i].clone();
 
-            let idx_n = idx_counts[i].max(0) as usize;
-            let indices: Vec<u16> =
-                unsafe { std::slice::from_raw_parts(idx_ptrs[i], idx_n).to_vec() };
+            let indices: Vec<u16> = indices[i].clone();
 
             let mut mesh = Mesh::new(
                 PrimitiveTopology::TriangleList,
@@ -523,7 +523,7 @@ pub fn load_and_setup_pet(world: &mut World) {
                 },
                 texture: tex,
                 mask_texture: white_h.clone(),
-                blend: BlendKind::from_core(blend_modes[i]),
+                blend: BlendKind::from_mocari(blend_modes[i]),
             };
 
             Prepared { mesh, material }
@@ -677,7 +677,7 @@ pub fn load_and_setup_pet(world: &mut World) {
     });
     world.insert_resource(mapping);
     world.insert_resource(PetDisplayImage(Some(pet_image_h)));
-    world.insert_non_send(pet);
+    world.insert_resource(pet);
 }
 
 /// 把 RTT Image 重置为纯 GPU 端 render target：清空 CPU data、关闭 resize 拷贝。
@@ -805,7 +805,7 @@ pub(crate) fn refit_pet_view(
 }
 
 pub fn tick_pet(
-    mut pet: NonSendMut<Live2dPet>,
+    mut pet: ResMut<Live2dPet>,
     time: Res<Time>,
     mut state: ResMut<PetTickState>,
 ) {
@@ -816,12 +816,12 @@ pub fn tick_pet(
     }
     // 累积 dt 一次推进：总推进量 == 逐帧 tick 之和，动作速度不变。
     let dt = std::mem::replace(&mut state.acc, 0.0);
-    pet.tick(dt, time.elapsed_secs());
+    pet.tick(dt);
     state.ticked = true;
 }
 
-/// tick 降频状态：`csmiUpdateModel`（主线程 ~4%，闭源 Core 改不动）+
-/// 全量顶点上传（FreeList ~10%）都不必逐帧。30Hz 累积推进，
+/// tick 降频状态：mocari `update_meshes`（全量 CPU 顶点重算）+
+/// 全量顶点上传都不必逐帧。30Hz 累积推进，
 /// `sync_live2d` 同拍，只在 tick 帧上传。
 pub const PET_TICK_INTERVAL: f32 = 1.0 / 30.0;
 
@@ -842,11 +842,7 @@ pub(crate) fn pet_tick_done(state: Res<PetTickState>) -> bool {
     state.ticked
 }
 
-fn read_vec4(ptr: *const f32) -> Vec4 {
-    unsafe { Vec4::from_array([*ptr, *ptr.add(1), *ptr.add(2), *ptr.add(3)]) }
-}
-
-/// 逐帧把 Cubism 计算结果同步到 Bevy 网格/材质/实体。
+/// 逐帧把 mocari 计算结果同步到 Bevy 网格/材质/实体。
 ///
 /// 原先为 `world: &mut World` 独占系统（每帧串行化整个 Update）；现改为普通
 /// 并行系统：pet 只读 + Assets/Query 参数，只与 `tick_pet`（同读写 pet）串行，
@@ -861,7 +857,7 @@ fn read_vec4(ptr: *const f32) -> Vec4 {
 /// 查询收窄到 `PetDrawable`，不再 `With<Mesh2d>` 扫全场 UI 网格。
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn sync_live2d(
-    pet: NonSend<Live2dPet>,
+    pet: Res<Live2dPet>,
     rig: Res<Live2dRenderRig>,
     mapping: Res<PetMapping>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -869,28 +865,22 @@ pub(crate) fn sync_live2d(
     mut slot_entities: Query<(Entity, Option<&mut Visibility>, &mut Transform), With<PetDrawable>>,
     mut commands: Commands,
 ) {
-    let d = pet.model.drawables();
-    let positions = d.vertex_positions();
-    let counts = d.vertex_counts();
-    let opacities = d.opacities();
-    let multiply = d.multiply_colors();
-    let screen = d.screen_colors();
-    let mask_counts = d.mask_counts();
-    let const_flags = d.constant_flags();
-    let dyn_flags = d.dynamic_flags();
-    let orders = pet.model.render_orders();
+    let drawables = pet.runtime.meshes();
 
     for &(entity, i, ref mesh_h, ref mat_h) in &rig.slots {
-        let n = counts[i].max(0) as usize;
+        let Some(mesh_data) = drawables.get(i) else {
+            continue;
+        };
+        let n = mesh_data.vertices().len();
 
-        // 顶点坐标在 Cubism 中以 (x0,y0)(x1,y1)… 连续 f32 对存放，逐点映射进
-        // RTT 像素空间后直写 mesh 缓冲；顶点数异常变化才回退到整属性替换。
+        // mocari 顶点已是 y-up 模型坐标（compare probe：与 Core 逐 bit 一致，
+        // 无翻转），逐点映射进 RTT 像素空间后直写 mesh 缓冲；
+        // 顶点数异常变化才回退到整属性替换。
         if let Some(mut mesh) = meshes.get_mut(mesh_h) {
             let matched = match mesh.attribute_mut(Mesh::ATTRIBUTE_POSITION) {
                 Some(VertexAttributeValues::Float32x3(v)) if v.len() == n => {
-                    let base = positions[i] as *const f32;
                     for (vi, slot) in v.iter_mut().enumerate() {
-                        let (x, y) = unsafe { (*base.add(vi * 2), *base.add(vi * 2 + 1)) };
+                        let [x, y] = mesh_data.vertices()[vi].position();
                         *slot = mapping.apply(x, y);
                     }
                     true
@@ -898,29 +888,32 @@ pub(crate) fn sync_live2d(
                 _ => false,
             };
             if !matched {
-                let base = positions[i] as *const f32;
                 let mut rebuilt = Vec::with_capacity(n);
-                for vi in 0..n {
-                    let (x, y) = unsafe { (*base.add(vi * 2), *base.add(vi * 2 + 1)) };
+                for v in mesh_data.vertices() {
+                    let [x, y] = v.position();
                     rebuilt.push(mapping.apply(x, y));
                 }
                 mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, rebuilt);
             }
         }
 
-        let masked = mask_counts[i] > 0;
-        // csmIsInvertedMask = 1 << 3 in the Cubism Core header (no named
-        // constant in our bindings): inverted → visible INSIDE mask shape.
-        let inverted = const_flags[i] & 8 != 0;
-        let show = opacities[i] >= OPACITY_EPSILON && dyn_flags[i] & 1 != 0;
+        let masked = !mesh_data.masks().is_empty();
+        let inverted = mesh_data.is_inverted_mask();
+        let show = mesh_data.opacity() >= OPACITY_EPSILON;
         let want_flags = Vec4::new(
-            opacities[i],
+            mesh_data.opacity(),
             if masked { 1.0 } else { 0.0 },
             0.0,
             if inverted { 1.0 } else { 0.0 },
         );
-        let want_multiply = read_vec4(std::ptr::from_ref(&multiply[i]) as *const f32);
-        let want_screen = read_vec4(std::ptr::from_ref(&screen[i]) as *const f32);
+        let want_multiply = {
+            let c = mesh_data.multiply_color();
+            Vec4::new(c[0], c[1], c[2], 1.0)
+        };
+        let want_screen = {
+            let c = mesh_data.screen_color();
+            Vec4::new(c[0], c[1], c[2], 1.0)
+        };
         let dirty = match materials.get(mat_h) {
             Some(cur) => {
                 cur.uniforms.flags != want_flags
@@ -948,7 +941,7 @@ pub(crate) fn sync_live2d(
                     }
                 }
             }
-            let want_z = orders[i] as f32;
+            let want_z = mesh_data.render_order() as f32;
             if tf.translation.z != want_z {
                 tf.translation.z = want_z;
             }

@@ -1,9 +1,9 @@
 //! n3ri-live2d — Live2D desktop pet for the n3ri_os desktop.
 //!
-//! Loads a Cubism v3 model via `live2d-core` (FFI to the Cubism 5 Core C
-//! API), animates it with `live2d-motion` (idle motions + physics + breath),
-//! renders it into an offscreen texture, and displays that texture as a
-//! centered UI node one layer below app windows.
+//! Loads a Cubism v3 model via `mocari` (pure-Rust runtime, no FFI),
+//! animates it (idle motions + physics + breath), renders it into an
+//! offscreen texture, and displays that texture as a centered UI node
+//! one layer below app windows.
 
 // wgpu 深嵌套类型 auto-trait（Send/Sync）求值触发 rustc 递归上限：
 // 见 n3ri-ui 同款注释（`recursion_depth_exceeding_limit` 1.100 起转 hard error）。

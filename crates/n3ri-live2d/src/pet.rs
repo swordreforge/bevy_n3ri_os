@@ -1,25 +1,25 @@
-//! The animated pet state: Cubism model + motion queues + physics + breath.
+//! The animated pet state: mocari runtime + motion players + breath.
 //!
-//! Frame flow mirrors the Cubism Framework (`CubismUserModel::Update`):
-//!   1. advance motion queue clocks
-//!   2. LoadParameters  (restore last frame's values)
-//!   3. evaluate all motion queues onto parameters / part opacities
-//!   4. breath (additive sinusoidal idle sway)
-//!   5. physics evaluate
-//!   6. clamp into parameter ranges, SaveParameters
-//!   7. `model.update()` — Core recomputes drawable vertices
+//! Frame flow mirrors the old Cubism Framework (`CubismUserModel::Update`),
+//! mapped onto mocari's explicit API:
+//!   1. tick motion players (advance clocks)
+//!   2. reset parameters to defaults
+//!   3. apply all motion players onto parameters / part opacities
+//!   4. breath (additive sinusoidal idle sway, ported from live2d-motion)
+//!   5. expression manager apply
+//!   6. physics evaluate (internally clamps via model ranges)
+//!   7. `update_meshes()` — mocari recomputes drawable vertices on CPU
 
 use std::collections::HashMap;
 
 use bevy::prelude::*;
 use bevy::ui::{ComputedNode, UiGlobalTransform};
-use live2d_core::canvas::CanvasInfo;
-use live2d_core::model::Model;
-use live2d_motion::breath::Breath;
-use live2d_motion::{ExpressionManager, ExpressionMotion};
-use live2d_motion::motion::CubismMotion;
-use live2d_motion::physics::{PhysicsEngine, PhysicsParams};
-use live2d_motion::queue::MotionQueueManager;
+use mocari::{
+    ExpressionManager,
+    json::{Expression3, Motion3},
+    motion::MotionPlayer,
+    runtime::ModelRuntime,
+};
 
 use crate::renderer::{HeadDisplay, PetMapping, PetViewSize};
 
@@ -27,6 +27,58 @@ pub const IDLE_QUEUE_INDEX: usize = 0;
 const SLEEP_TIMEOUT: f32 = 15.0;
 const PET_COOLDOWN: f32 = 3.0;
 const PETTING_EXPRESSIONS: &[&str] = &["02_Dizzy", "04_Shy", "07_Smile", "13_Happy"];
+
+/// Breath parameter definition, ported from live2d-motion's `Breath`
+/// (LAppModel defaults). Adds subtle sinusoidal oscillation, applied as
+/// additive deltas after motions.
+struct BreathParam {
+    id: &'static str,
+    offset: f32,
+    peak: f32,
+    cycle: f32,
+    weight: f32,
+    prev_raw: f32,
+}
+
+pub(crate) struct BreathParamState {
+    time: f32,
+    params: Vec<BreathParam>,
+}
+
+impl BreathParamState {
+    fn new() -> Self {
+        Self {
+            time: 0.0,
+            params: vec![
+                BreathParam { id: "ParamAngleX", offset: 0.0, peak: 15.0, cycle: 6.5345, weight: 0.5, prev_raw: 0.0 },
+                BreathParam { id: "ParamAngleY", offset: 0.0, peak: 8.0, cycle: 3.5345, weight: 0.5, prev_raw: 0.0 },
+                BreathParam { id: "ParamAngleZ", offset: 0.0, peak: 10.0, cycle: 5.5345, weight: 0.5, prev_raw: 0.0 },
+                BreathParam { id: "ParamBodyAngleX", offset: 0.0, peak: 4.0, cycle: 15.5345, weight: 0.5, prev_raw: 0.0 },
+                BreathParam { id: "ParamBreath", offset: 0.5, peak: 0.5, cycle: 3.2345, weight: 0.5, prev_raw: 0.0 },
+            ],
+        }
+    }
+
+    fn update(&mut self, dt: f32, runtime: &mut ModelRuntime) {
+        self.time += dt;
+        let t = self.time * 2.0 * std::f32::consts::PI;
+        for param in &mut self.params {
+            let raw = param.offset + param.peak * (t / param.cycle).sin();
+            let delta = (raw - param.prev_raw) * param.weight;
+            param.prev_raw = raw;
+            if delta.abs() < 1e-7 {
+                continue;
+            }
+            let Some(index) = runtime.parameter_index(param.id) else {
+                continue;
+            };
+            let Some(current) = runtime.parameter_value_by_index(index) else {
+                continue;
+            };
+            runtime.set_parameter_by_index(index, current + delta);
+        }
+    }
+}
 
 #[derive(Resource)]
 pub struct IdleTimer {
@@ -75,117 +127,96 @@ impl Default for PettingState {
     }
 }
 
-/// Non-Send (raw FFI pointers) — only touched from main-thread systems.
+/// mocari runtime is fully `Send` (pure-Rust state, no FFI pointers) —
+/// a plain `Resource`, touchable from any thread.
+#[derive(Resource)]
 pub struct Live2dPet {
-    pub model: Model<'static>,
-    pub canvas: CanvasInfo,
+    pub runtime: ModelRuntime,
     pub texture_paths: Vec<String>,
 
-    pub(crate) param_ids: Vec<String>,
-    pub(crate) param_lookup: HashMap<String, usize>,
-    pub(crate) part_lookup: HashMap<String, usize>,
-    pub(crate) mins: Vec<f32>,
-    pub(crate) maxs: Vec<f32>,
-    #[allow(dead_code)]
-    pub(crate) defaults: Vec<f32>,
+    pub(crate) players: Vec<MotionPlayer>,
+    pub(crate) breath: BreathParamState,
 
-    pub(crate) saved_params: Vec<f32>,
-    pub(crate) saved_parts: Vec<f32>,
+    pub idle_motion: Option<Motion3>,
+    pub sleep_motion: Option<Motion3>,
 
-    pub(crate) queues: Vec<MotionQueueManager>,
-    pub(crate) physics: Option<PhysicsEngine>,
-    pub(crate) breath: Breath,
-
-    pub idle_motion: Option<CubismMotion>,
-    pub sleep_motion: Option<CubismMotion>,
-
-    pub expressions: HashMap<String, ExpressionMotion>,
+    pub expressions: HashMap<String, Expression3>,
     pub expression_manager: ExpressionManager,
 }
 
 impl Live2dPet {
-    pub fn tick(&mut self, dt: f32, user_time: f32) {
+    pub(crate) fn new(
+        runtime: ModelRuntime,
+        texture_paths: Vec<String>,
+        players: Vec<MotionPlayer>,
+        idle_motion: Option<Motion3>,
+        sleep_motion: Option<Motion3>,
+        expressions: HashMap<String, Expression3>,
+    ) -> Self {
+        Self {
+            runtime,
+            texture_paths,
+            players,
+            breath: BreathParamState::new(),
+            idle_motion,
+            sleep_motion,
+            expressions,
+            expression_manager: ExpressionManager::new(),
+        }
+    }
+
+    pub fn tick(&mut self, dt: f32) {
         if dt <= 0.0 {
             return;
         }
 
-        for q in self.queues.iter_mut() {
-            q.advance_time(dt);
+        for p in self.players.iter_mut() {
+            p.tick(dt);
+        }
+        self.expression_manager.tick(dt);
+
+        // LoadParameters: restart the frame from model defaults so one-shot
+        // and looping motions blend the same way every frame.
+        self.runtime.reset_parameters();
+
+        for p in self.players.iter() {
+            p.apply(&mut self.runtime);
         }
 
-        {
-            let mut params = self.model.parameters();
-            let mut parts = self.model.parts();
-            let mut vals = params.values_mut();
-            let pops = parts.opacities_mut();
+        self.breath.update(dt, &mut self.runtime);
 
-            let v = vals.as_mut_slice();
-            v.copy_from_slice(&self.saved_params);
-            pops.copy_from_slice(&self.saved_parts);
+        self.expression_manager.apply(&mut self.runtime);
 
-            // 每 tick 一次的空切片：`do_update_motion` 只读，直接借用静态空切片，
-            // 不再每帧堆分配两个 `Vec<String>`。
-            let empty_ids: &[String] = &[];
-            for q in self.queues.iter_mut() {
-                q.do_update_motion(
-                    &self.param_lookup,
-                    v,
-                    empty_ids,
-                    empty_ids,
-                    &self.part_lookup,
-                    pops,
-                );
-            }
+        self.runtime.apply_pose(dt);
+        self.runtime.apply_physics(dt);
 
-            self.breath.update(dt, v, &self.param_lookup);
-
-            self.expression_manager.apply(&self.param_lookup, v, user_time);
-
-            if let Some(physics) = self.physics.as_mut() {
-                physics.evaluate(
-                    &mut PhysicsParams {
-                        values: v,
-                        minimums: &self.mins,
-                        maximums: &self.maxs,
-                        defaults: &self.defaults,
-                        names: &self.param_ids,
-                    },
-                    dt,
-                );
-            }
-
-            for (i, val) in v.iter_mut().enumerate() {
-                *val = val.clamp(self.mins[i], self.maxs[i]);
-            }
-            self.saved_params.copy_from_slice(v);
-            self.saved_parts.copy_from_slice(pops);
-        }
-
-        self.model.reset_dynamic_flags();
-        self.model.update();
+        self.runtime.update_meshes();
     }
 
     pub fn drawable_count(&self) -> usize {
-        self.model.drawables().len()
+        self.runtime.meshes().len()
+    }
+
+    fn play_idle_slot(&mut self, motion: Option<Motion3>) {
+        if let Some(motion) = motion {
+            if self.players.is_empty() {
+                self.players.push(MotionPlayer::new(motion.clone()));
+            }
+            self.players[IDLE_QUEUE_INDEX] = MotionPlayer::new(motion);
+        }
     }
 
     pub fn switch_to_idle(&mut self) {
-        if let Some(motion) = self.idle_motion.clone() {
-            self.queues[IDLE_QUEUE_INDEX].stop_all_motions();
-            self.queues[IDLE_QUEUE_INDEX].start_motion(motion, None);
-        }
+        self.play_idle_slot(self.idle_motion.clone());
     }
 
     pub fn switch_to_sleep(&mut self) {
-        if let Some(motion) = self.sleep_motion.clone() {
-            self.queues[IDLE_QUEUE_INDEX].stop_all_motions();
-            self.queues[IDLE_QUEUE_INDEX].start_motion(motion, None);
-        }
+        self.play_idle_slot(self.sleep_motion.clone());
     }
 
-    pub fn start_expression(&mut self, name: &str, user_time: f32) -> bool {
-        if let Some(expr) = self.expressions.get(name) {
-            self.expression_manager.start_expression(expr.clone(), user_time);
+    pub fn start_expression(&mut self, name: &str) -> bool {
+        if let Some(expr) = self.expressions.get(name).cloned() {
+            self.expression_manager.play(expr);
             true
         } else {
             false
@@ -193,23 +224,21 @@ impl Live2dPet {
     }
 
     pub fn clear_expression(&mut self) {
-        self.expression_manager.clear();
+        self.expression_manager.stop_all();
     }
 
     pub fn vertex_bbox(&self) -> [f32; 4] {
-        let d = self.model.drawables();
-        let counts = d.vertex_counts();
-        let positions = d.vertex_positions();
-        let (mut min_x, mut min_y) = (f32::MAX, f32::MAX);
-        let (mut max_x, mut max_y) = (f32::MIN, f32::MIN);
-        for i in 0..d.len() {
-            let ptr = positions[i];
-            for vi in 0..counts[i] as usize {
-                let p = unsafe { *ptr.add(vi) };
-                min_x = min_x.min(p.X);
-                min_y = min_y.min(p.Y);
-                max_x = max_x.max(p.X);
-                max_y = max_y.max(p.Y);
+        let mut min_x = f32::MAX;
+        let mut min_y = f32::MAX;
+        let mut max_x = f32::MIN;
+        let mut max_y = f32::MIN;
+        for m in self.runtime.meshes() {
+            for v in m.vertices() {
+                let [x, y] = v.position();
+                min_x = min_x.min(x);
+                min_y = min_y.min(y);
+                max_x = max_x.max(x);
+                max_y = max_y.max(y);
             }
         }
         if min_x > max_x {
@@ -221,7 +250,7 @@ impl Live2dPet {
 
 pub fn track_clicks(
     mouse: Res<ButtonInput<MouseButton>>,
-    mut pet: NonSendMut<Live2dPet>,
+    mut pet: ResMut<Live2dPet>,
     mut timer: ResMut<IdleTimer>,
 ) {
     if mouse.just_pressed(MouseButton::Left) || mouse.just_pressed(MouseButton::Right) {
@@ -234,7 +263,7 @@ pub fn track_clicks(
 }
 
 pub fn check_idle_timeout(
-    mut pet: NonSendMut<Live2dPet>,
+    mut pet: ResMut<Live2dPet>,
     time: Res<Time>,
     mut timer: ResMut<IdleTimer>,
 ) {
@@ -253,7 +282,7 @@ pub fn detect_petting(
     view_size: Option<Res<PetViewSize>>,
     hit_area: Res<HeadHitArea>,
     mut state: ResMut<PettingState>,
-    mut pet: NonSendMut<Live2dPet>,
+    mut pet: ResMut<Live2dPet>,
     time: Res<Time>,
 ) {
     state.cooldown_timer = (state.cooldown_timer - time.delta_secs()).max(0.0);
@@ -306,7 +335,7 @@ pub fn detect_petting(
 
             let expr_idx = (time.elapsed_secs() * 7.0) as usize % PETTING_EXPRESSIONS.len();
             let expr_name = PETTING_EXPRESSIONS[expr_idx];
-            pet.start_expression(expr_name, time.elapsed_secs());
+            pet.start_expression(expr_name);
         }
     }
 
@@ -329,7 +358,7 @@ pub fn detect_head_petting(
     windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
     head: Query<(&Node, &Visibility), With<HeadDisplay>>,
     mut state: ResMut<HeadPettingState>,
-    mut pet: NonSendMut<Live2dPet>,
+    mut pet: ResMut<Live2dPet>,
     time: Res<Time>,
 ) {
     state.cooldown_timer = (state.cooldown_timer - time.delta_secs()).max(0.0);
@@ -391,7 +420,7 @@ pub fn detect_head_petting(
 
             let expr_idx = (time.elapsed_secs() * 7.0) as usize % PETTING_EXPRESSIONS.len();
             let expr_name = PETTING_EXPRESSIONS[expr_idx];
-            pet.start_expression(expr_name, time.elapsed_secs());
+            pet.start_expression(expr_name);
         }
     }
 

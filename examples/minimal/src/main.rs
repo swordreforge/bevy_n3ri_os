@@ -1035,15 +1035,15 @@ const EMOTION_EXPRESSIONS: [(&str, &str); 9] = [
 
 fn chat_emotion_bridge(
     mut emotion_events: MessageReader<ChatEmotionEvent>,
-    mut pet: NonSendMut<Live2dPet>,
-    time: Res<Time>,
+    mut pet: ResMut<Live2dPet>,
+    _time: Res<Time>,
 ) {
     for event in emotion_events.read() {
         if let Some((_, name)) = EMOTION_EXPRESSIONS
             .iter()
             .find(|(key, _)| key == &event.0.as_str())
         {
-            pet.start_expression(name, time.elapsed_secs());
+            pet.start_expression(name);
         }
     }
 }

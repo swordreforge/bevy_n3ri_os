@@ -1234,6 +1234,12 @@ pub struct MemoryStoreRes {
     loaded: bool,
 }
 
+impl MemoryStoreRes {
+    pub fn is_loaded(&self) -> bool {
+        self.loaded
+    }
+}
+
 fn memory_maintenance_tick(
     cfg: Res<AgentConfig>,
     mut hot: ResMut<HotMemory>,

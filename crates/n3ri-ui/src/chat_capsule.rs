@@ -7,7 +7,7 @@ use bevy::prelude::*;
 use bevy::input::keyboard::{Key, KeyboardInput};
 use bevy::window::Ime;
 
-use n3ri_llm::{LlmClient, Message};
+use n3ri_llm::{LlmClient, Message, Role};
 
 use crate::font::{FontContext, N3riFonts};
 use crate::input_focus::{TextInputFocus, TextInputOwner};
@@ -42,6 +42,7 @@ impl Plugin for ChatCapsulePlugin {
             .add_systems(Update, chat_sentence_reveal)
             .add_systems(Update, chat_bubble_sync);
         app.add_message::<ChatEmotionEvent>();
+        app.add_systems(Update, chat_history_restore);
     }
 }
 
@@ -90,6 +91,91 @@ pub(crate) struct ChatLlmState {
 #[derive(Resource, Default)]
 pub(crate) struct ChatHistory {
     messages: Vec<Message>,
+}
+
+/// 短期上下文预算：成对保留的轮数上限与总字符上限。
+const CHAT_HISTORY_MAX_TURNS: usize = 10;
+const CHAT_HISTORY_MAX_CHARS: usize = 12000;
+/// 单次请求总预算（system 首条 + 历史），超限时裁剪历史副本。
+const CHAT_REQUEST_MAX_CHARS: usize = 24000;
+
+/// 成对裁剪历史：从前往后整轮丢弃，保证首条为 user；结尾残缺的 assistant 半轮也丢掉。
+fn trim_history(messages: &mut Vec<Message>, max_turns: usize, max_chars: usize) {
+    trim_history_to_turns(messages, max_turns);
+    while history_chars(messages) > max_chars && messages.len() > 2 {
+        messages.remove(0);
+        messages.remove(0);
+    }
+    if messages.len() == 1 && matches!(messages[0].role, Role::Assistant) {
+        messages.clear();
+    }
+}
+
+fn trim_history_to_turns(messages: &mut Vec<Message>, max_turns: usize) {
+    while messages.len() > max_turns.saturating_mul(2) && messages.len() > 1 {
+        messages.remove(0);
+        if messages.len() > 1 && matches!(messages[0].role, Role::Assistant) {
+            messages.remove(0);
+        }
+    }
+    if messages.len() == 1 && matches!(messages[0].role, Role::Assistant) {
+        messages.clear();
+    }
+}
+
+fn history_chars(messages: &[Message]) -> usize {
+    messages.iter().map(|m| m.content.chars().count()).sum()
+}
+
+/// 按字符预算组装请求：system 首条固定，历史超预算时只给模型裁剪后的副本，
+/// `ChatHistory` 本体不动（仍保留完整短期窗口）。
+fn build_request_messages(
+    system: Message,
+    history: &[Message],
+    budget_chars: usize,
+) -> Vec<Message> {
+    let mut kept: Vec<Message> = history.to_vec();
+    let system_chars = system.content.chars().count();
+    let budget = budget_chars.saturating_sub(system_chars);
+    while history_chars(&kept) > budget && kept.len() > 2 {
+        kept.remove(0);
+        kept.remove(0);
+    }
+    if kept.len() == 1 && matches!(kept[0].role, Role::Assistant) {
+        kept.clear();
+    }
+    let mut req = Vec::with_capacity(kept.len() + 1);
+    req.push(system);
+    req.extend(kept);
+    req
+}
+
+/// 冷启动恢复：episodes 已由 `memory_maintenance_tick` 回放进 `hot.tail`，
+/// 这里把尾部转成 user/assistant 对，填进 `ChatHistory`。
+/// 恢复失败（资源未就绪）时静默跳过——下一次 Update 帧 `hot` 就绪后再补。
+fn chat_history_restore(
+    mut history: ResMut<ChatHistory>,
+    hot: Option<Res<n3ri_agent::HotMemory>>,
+    store_res: Option<Res<n3ri_agent::MemoryStoreRes>>,
+) {
+    if !history.messages.is_empty() {
+        return;
+    }
+    let (Some(hot), Some(store_res)) = (hot, store_res) else {
+        return;
+    };
+    if !store_res.is_loaded() && hot.tail.is_empty() && hot.memo.is_empty() {
+        return;
+    }
+    for t in hot.tail.iter() {
+        if !t.user.trim().is_empty() {
+            history.messages.push(Message::user(t.user.clone()));
+        }
+        if !t.assistant.trim().is_empty() {
+            history.messages.push(Message::assistant(t.assistant.clone()));
+        }
+    }
+    trim_history(&mut history.messages, CHAT_HISTORY_MAX_TURNS, CHAT_HISTORY_MAX_CHARS);
 }
 
 /// Agent 主动轮投递口：M2 起 `n3ri-agent` 的 `proactive_poll` 经此队列进气泡。
@@ -866,9 +952,7 @@ fn chat_llm_dispatch(
 
     let user_text = input.clone();
     history.messages.push(Message::user(input));
-    if history.messages.len() > 20 {
-        history.messages.remove(0);
-    }
+    trim_history(&mut history.messages, CHAT_HISTORY_MAX_TURNS, CHAT_HISTORY_MAX_CHARS);
 
     let mem_block = n3ri_agent::build_memory_block(&store.store, &hot);
     let mem_opt = if mem_block.is_empty() || !agent_cfg.memory_enabled {
@@ -876,14 +960,16 @@ fn chat_llm_dispatch(
     } else {
         Some(mem_block.as_str())
     };
-    let mut req = Vec::with_capacity(history.messages.len() + 1);
-    req.push(Message::system(n3ri_agent::append_context(
-        &system_prompt,
-        &view,
-        &snap,
-        mem_opt,
-    )));
-    req.extend(history.messages.iter().cloned());
+    let req = build_request_messages(
+        Message::system(n3ri_agent::append_context(
+            &system_prompt,
+            &view,
+            &snap,
+            mem_opt,
+        )),
+        &history.messages,
+        CHAT_REQUEST_MAX_CHARS,
+    );
 
     let (tx, rx) = channel();
     let client = LlmClient::new();
@@ -939,6 +1025,7 @@ fn chat_llm_poll(
                 emotion_events.write(ChatEmotionEvent(e));
             }
             history.messages.push(Message::assistant(cleaned.clone()));
+            trim_history(&mut history.messages, CHAT_HISTORY_MAX_TURNS, CHAT_HISTORY_MAX_CHARS);
             n3ri_agent::record_turn(&mut hot, &mut store.store, &user_text, &cleaned, &agent_cfg);
             // tool 副作用（open_app/notify）经 outbox 交 agent_outbox_bridge 落事件。
             outbox.push_effects(effects);
@@ -1153,5 +1240,75 @@ fn chat_bubble_sync(
         if color.0 != target_color {
             *color = TextColor(target_color);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn msgs(roles: &[(&str, Role)]) -> Vec<Message> {
+        roles
+            .iter()
+            .map(|(c, r)| Message {
+                role: *r,
+                content: (*c).to_string(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn trim_keeps_pairs_starting_with_user() {
+        let mut h = msgs(&[
+            ("u1", Role::User),
+            ("a1", Role::Assistant),
+            ("u2", Role::User),
+            ("a2", Role::Assistant),
+            ("u3", Role::User),
+            ("a3", Role::Assistant),
+        ]);
+        trim_history(&mut h, 2, 10000);
+        assert_eq!(h.len(), 4);
+        assert!(matches!(h[0].role, Role::User));
+        assert_eq!(h[0].content, "u2");
+        assert_eq!(h[3].content, "a3");
+    }
+
+    #[test]
+    fn trim_drops_dangling_assistant_tail() {
+        let mut h = msgs(&[("a1", Role::Assistant)]);
+        trim_history(&mut h, 10, 10000);
+        assert!(h.is_empty());
+    }
+
+    #[test]
+    fn trim_respects_char_budget() {
+        let long: String = "x".repeat(5000);
+        let mut h = vec![
+            Message::user(long.clone()),
+            Message::assistant(long.clone()),
+            Message::user("u2".to_string()),
+            Message::assistant("a2".to_string()),
+        ];
+        trim_history(&mut h, 10, 100);
+        assert_eq!(h.len(), 2);
+        assert_eq!(h[0].content, "u2");
+    }
+
+    #[test]
+    fn request_builder_trims_history_copy_only() {
+        let system = Message::system("s".repeat(100));
+        let long: String = "y".repeat(5000);
+        let history = vec![
+            Message::user(long.clone()),
+            Message::assistant(long.clone()),
+            Message::user("u-new".to_string()),
+            Message::assistant("a-new".to_string()),
+        ];
+        let req = build_request_messages(system, &history, 200);
+        assert_eq!(history.len(), 4);
+        assert!(matches!(req[0].role, Role::System));
+        assert!(req.iter().any(|m| m.content == "u-new"));
+        assert!(!req.iter().any(|m| m.content == long));
     }
 }

@@ -165,6 +165,12 @@ impl BlendKind {
                 },
             },
             Self::Multiplicative => BlendState {
+                // 对齐 live2d-viewer 的 GL：
+                //   gl.blend_func_separate(DST_COLOR, ONE_MINUS_SRC_ALPHA, ZERO, ONE)
+                // color 把 dst 按 src 压暗；alpha 必须原样保留 dst。
+                // 之前这里 alpha 是 (Zero, OneMinusSrcAlpha)，会把 dst alpha
+                // 往 0 乘——阴影盖住的地方 alpha 归零，直接变透明洞
+                // （这就是当初 hollow-interior 要 hack 成 Normal 的根因）。
                 color: BlendComponent {
                     src_factor: BlendFactor::Dst,
                     dst_factor: BlendFactor::OneMinusSrcAlpha,
@@ -172,7 +178,7 @@ impl BlendKind {
                 },
                 alpha: BlendComponent {
                     src_factor: BlendFactor::Zero,
-                    dst_factor: BlendFactor::OneMinusSrcAlpha,
+                    dst_factor: BlendFactor::One,
                     operation: BlendOperation::Add,
                 },
             },

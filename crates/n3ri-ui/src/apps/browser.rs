@@ -160,8 +160,10 @@ pub struct BrowserLaunch(pub bool);
 #[derive(Resource, Clone)]
 struct BrowserImageHandle(Handle<Image>);
 
-/// 常驻引擎核心：Servo 实例 + interop/GL 上下文（关窗不销毁）。
-/// `webview/delegate` 是会话（一次打开的页面会话），关窗即 drop 释放页面 DOM/JS。
+/// 常驻引擎核心：Servo 实例 + interop/GL 上下文（关窗不销毁，Servo 不支持进程内重建）。
+/// `webview/delegate` 是会话（一次打开的页面会话），关窗即 drop 发 Close，
+/// 靠关窗后的 drain spin 让 constellation 拆掉 pipeline（见 browser_session_track），
+/// 内存先回分配器再由 decay 归还 OS。
 struct BrowserEngine {
     servo: Servo,
     interop: ServoWgpuInteropAdapter,
@@ -175,8 +177,16 @@ impl BrowserEngine {
         self.webview.is_some()
     }
     fn detach_session(&mut self) {
+        // 先清 popup 队列：delegate.pending ⇄ WebView 是 Rc 环，
+        // 不手动 clear 则双方永不 drop，CloseWebView 发不出去，页面 DOM/JS 常驻。
+        if let Some(d) = self.delegate.take() {
+            d.pending.borrow_mut().clear();
+            drop(d);
+        }
         self.webview = None;
         self.delegate = None;
+        // 注意：只发 Close 消息，constellation/paint 侧的收尾靠关窗后的
+        // drain spin（见 browser_session_track）分帧处理，不在此阻塞。
     }
     /// 用同一 Servo/上下文重建一个全新页面会话（关窗后下次打开的轻量恢复）。
     fn build_session(&mut self, home_url: &str) {
@@ -1233,6 +1243,7 @@ fn browser_session_track(
     mut frame: ResMut<BrowserFrame>,
     mut last: ResMut<BrowserLastFrame>,
     mut was_open: Local<bool>,
+    mut drain: Local<u8>,
 ) {
     let open = !pages.is_empty();
     if !open && *was_open {
@@ -1244,6 +1255,17 @@ fn browser_session_track(
         *last = BrowserLastFrame::default();
         if let Some(engine) = host.0.as_mut() {
             engine.detach_session();
+        }
+        // Close 消息刚入队，constellation 侧要靠 spin 才会拆 pipeline，
+        // 下面分帧 pump，否则页面线程常驻、内存不下。
+        *drain = 60;
+    }
+    // 关窗后 browser_drive 早退不再 spin，这里补上 drain：
+    // 无 webview 的 spin 只是过一遍空队列，开销可忽略。
+    if !open && *drain > 0 {
+        *drain -= 1;
+        if let Some(engine) = host.0.as_mut() {
+            engine.servo.spin_event_loop();
         }
     }
     *was_open = open;

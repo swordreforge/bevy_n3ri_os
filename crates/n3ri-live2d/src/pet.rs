@@ -28,6 +28,12 @@ const SLEEP_TIMEOUT: f32 = 15.0;
 const PET_COOLDOWN: f32 = 3.0;
 const PETTING_EXPRESSIONS: &[&str] = &["02_Dizzy", "04_Shy", "07_Smile", "13_Happy"];
 
+/// 表情自动回收时长（秒）。mocari/FFI 的 ExpressionManager 都没有"播完自动
+/// 消失"语义——player 一旦 fade-in 完成就以 weight=1 常驻，覆盖对应参数直到
+/// 下一次 play/stop。触发侧（摸头/AI 事件）只管 play 不管收，就会"一直不恢复"。
+/// 这里触发后计时，到时自动 stop_all（0.5s 淡出），回到 idle 基线。
+const EXPRESSION_HOLD_SECS: f32 = 3.0;
+
 /// 动作切换交叉淡化时长（秒）。FFI 时代走 MotionQueueManager（queue 语义，
 /// 新旧动作重叠混合）；mocari 的 MotionPlayer 没有 queue 语义（fade 秒数
 /// 硬编码 0 → 首帧即全权重），单槽替换会瞬切。这里手动补回交叉淡化。
@@ -176,6 +182,9 @@ pub struct Live2dPet {
 
     pub expressions: HashMap<String, Expression3>,
     pub expression_manager: ExpressionManager,
+    /// 表情保持计时：start_expression 置为 HOLD 秒，每 tick 递减，
+    /// 归零时自动 stop_all（淡出回基线）。None = 当前无激活表情。
+    expression_hold: Option<f32>,
 }
 
 impl Live2dPet {
@@ -197,6 +206,7 @@ impl Live2dPet {
             sleep_motion,
             expressions,
             expression_manager: ExpressionManager::new(),
+            expression_hold: None,
         }
     }
 
@@ -213,6 +223,16 @@ impl Live2dPet {
             f.t += dt;
         }
         self.expression_manager.tick(dt);
+
+        // 表情自动回收：保持计时归零 → stop_all 淡出（0.5s）回基线。
+        // 续播（新 start_expression）会重置计时，不会中途被收。
+        if let Some(hold) = self.expression_hold.as_mut() {
+            *hold -= dt;
+            if *hold <= 0.0 {
+                self.expression_hold = None;
+                self.expression_manager.stop_all();
+            }
+        }
 
         // LoadParameters: restart the frame from model defaults so one-shot
         // and looping motions blend the same way every frame.
@@ -291,6 +311,8 @@ impl Live2dPet {
     pub fn start_expression(&mut self, name: &str) -> bool {
         if let Some(expr) = self.expressions.get(name).cloned() {
             self.expression_manager.play(expr);
+            // 续播重置保持计时：3 秒无新触发才淡出回收。
+            self.expression_hold = Some(EXPRESSION_HOLD_SECS);
             true
         } else {
             false
@@ -298,7 +320,13 @@ impl Live2dPet {
     }
 
     pub fn clear_expression(&mut self) {
+        self.expression_hold = None;
         self.expression_manager.stop_all();
+    }
+
+    /// 当前是否有激活表情（保持计时中或正在淡出）。
+    pub fn has_active_expression(&self) -> bool {
+        self.expression_hold.is_some() || !self.expression_manager.is_empty()
     }
 
     pub fn vertex_bbox(&self) -> [f32; 4] {

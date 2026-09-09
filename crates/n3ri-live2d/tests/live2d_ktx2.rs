@@ -27,9 +27,11 @@ fn ktx2_textures_decode_to_rgba_bc7() {
         .unwrap_or_else(|e| panic!("{name}: {e:?}"));
         assert_eq!(img.width(), 2048, "{name} width");
         assert_eq!(img.height(), 2048, "{name} height");
-        assert!(
-            img.texture_descriptor.mip_level_count > 1,
-            "{name} should carry baked mipmaps"
+        // 宠物 RTT 上限 1920 ≈ 纹理 2048 的 1:1 显示，mipmap 除了占 33% 显存
+        // 几乎无用——编码时不带 `--genmipmap`，此处锁死单层。
+        assert_eq!(
+            img.texture_descriptor.mip_level_count, 1,
+            "{name} must be single-level (no baked mipmaps)"
         );
         let fmt = format!("{:?}", img.texture_descriptor.format);
         assert!(

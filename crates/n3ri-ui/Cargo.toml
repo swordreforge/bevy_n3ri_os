@@ -43,3 +43,6 @@ winit = "0.30"
 
 [features]
 embed-content = []
+
+[dev-dependencies]
+naga = { version = "29", features = ["wgsl-in"] }

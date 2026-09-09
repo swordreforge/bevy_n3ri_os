@@ -18,9 +18,6 @@ pub struct DesktopBackgroundMaterial {
     pub offset: Vec2,
     #[texture(1)]
     #[sampler(2)]
-    pub water_normal: Handle<Image>,
-    #[texture(3)]
-    #[sampler(4)]
     pub noise: Handle<Image>,
 }
 
@@ -72,17 +69,14 @@ pub fn spawn_desktop_background(
     images: &mut Assets<Image>,
     materials: &mut Assets<DesktopBackgroundMaterial>,
 ) -> Entity {
-    let water = asset_server.load("nori/ocean/water-normal.png");
     let noise = asset_server.load("nori/ocean/gradient-noise.jpg");
 
-    for handle in [&water, &noise] {
-        if let Some(mut img) = images.get_mut(handle) {
-            img.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
-                address_mode_u: ImageAddressMode::Repeat,
-                address_mode_v: ImageAddressMode::Repeat,
-                ..default()
-            });
-        }
+    if let Some(mut img) = images.get_mut(&noise) {
+        img.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
+            address_mode_u: ImageAddressMode::Repeat,
+            address_mode_v: ImageAddressMode::Repeat,
+            ..default()
+        });
     }
 
     let handle = materials.add(DesktopBackgroundMaterial {
@@ -90,7 +84,6 @@ pub fn spawn_desktop_background(
         time: 0.0,
         zoom: 1.0,
         offset: Vec2::ZERO,
-        water_normal: water,
         noise,
     });
 

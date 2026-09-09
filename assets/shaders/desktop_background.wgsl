@@ -9,10 +9,8 @@ struct Config {
 };
 
 @group(1) @binding(0) var<uniform> config: Config;
-@group(1) @binding(1) var water_normal_tex: texture_2d<f32>;
-@group(1) @binding(2) var water_normal_smp: sampler;
-@group(1) @binding(3) var noise_tex: texture_2d<f32>;
-@group(1) @binding(4) var noise_smp: sampler;
+@group(1) @binding(1) var noise_tex: texture_2d<f32>;
+@group(1) @binding(2) var noise_smp: sampler;
 
 fn hash21(p: vec2<f32>) -> f32 {
     var q = fract(p * vec2(123.34, 456.21));
@@ -35,9 +33,13 @@ fn glow_layer(auv: vec2<f32>, t: f32, density: vec2<f32>, seed_off: f32, scale: 
             let y_pos = c.y + 1.1 - life_t * 1.2;
             let center = vec2(x_pos / density.x, y_pos / density.y);
             let d = distance(auv, center);
+            let d2 = d * d;
+            if (d2 * core_k > 30.0 && d2 * halo_k > 30.0) {
+                continue;
+            }
             let death = smoothstep(0.55, 1.0, life_t);
-            let core = exp(-d * d * core_k * (1.0 + death * 1.5)) * 2.0;
-            let halo = exp(-d * d * halo_k * (1.0 + death)) * 0.06;
+            let core = exp(-d2 * core_k * (1.0 + death * 1.5)) * 2.0;
+            let halo = exp(-d2 * halo_k * (1.0 + death)) * 0.06;
             let fade_in = smoothstep(0.0, 0.25, life_t);
             let fade_out = 1.0 - smoothstep(0.72, 1.0, life_t);
             let tw = sin(t * (1.2 + seed * 3.0) + seed * 40.0) * sin(t * (2.3 + seed * 1.7) + seed * 17.0);
@@ -64,10 +66,14 @@ fn bokeh_layer(auv: vec2<f32>, t: f32, density: vec2<f32>, seed_off: f32, scale:
             let y_pos = c.y + 1.1 - life_t * 1.2;
             let center = vec2(x_pos / density.x, y_pos / density.y);
             let d = distance(auv, center);
+            let d2 = d * d;
             let k = 12000.0 - 5000.0 * seed;
+            if (d2 * k > 30.0 && d2 * k * 0.38 > 30.0) {
+                continue;
+            }
             let death = smoothstep(0.55, 1.0, life_t);
-            let disc = exp(-d * d * k * (1.0 + death * 1.5)) * 2.2;
-            let ring = exp(-d * d * k * 0.38 * (1.0 + death)) * 0.06;
+            let disc = exp(-d2 * k * (1.0 + death * 1.5)) * 2.2;
+            let ring = exp(-d2 * k * 0.38 * (1.0 + death)) * 0.06;
             let fade_in = smoothstep(0.0, 0.25, life_t);
             let fade_out = 1.0 - smoothstep(0.72, 1.0, life_t);
             let tw = sin(t * (1.0 + seed * 2.5) + seed * 40.0) * sin(t * (1.9 + seed * 1.5) + seed * 17.0);
@@ -99,27 +105,26 @@ fn beam_column3(
 // 移动点光源：局部亮斑
 fn point_light(p: vec2<f32>, pos: vec2<f32>, k: f32) -> f32 {
     let d = distance(p, pos);
-    return exp(-d * d * k);
+    let d2 = d * d;
+    if (d2 * k > 25.0) {
+        return 0.0;
+    }
+    return exp(-d2 * k);
 }
 
 @fragment
 fn fragment(in: UiVertexOutput) -> @location(0) vec4<f32> {
     let t = config.time;
-    // 推镜变换：以屏幕中心为缩放锚点，offset 平移采样 UV
-    // （offset.x 负值 → 采样坐标左移 → 内容右移；正值 → 内容左移）
     let uv = (in.uv - 0.5) / max(config.zoom, 0.01) + 0.5 + config.offset;
     let aspect = in.size.x / max(in.size.y, 1.0);
     let auv = vec2(uv.x * aspect, uv.y);
 
-    // 视差偏移：鼠标位置 [-1,1] × 深度系数
-    let parallax_bg = config.mouse_pos * 0.01;       // 背景：几乎不动
-    let parallax_mid = config.mouse_pos * 0.03;      // 中层：水波、光束
-    let parallax_fg = config.mouse_pos * 0.06;       // 前景：网格地板
+    let parallax_mid = config.mouse_pos * 0.03;      // 中层：光束
+    let parallax_fg = config.mouse_pos * 0.06;      // 前景：网格地板
     let parallax_top = config.mouse_pos * 0.08;      // 最前：萤火粒子
 
     let horizon = 0.62;
     let below = uv.y - horizon;
-    let floor_mask = smoothstep(-0.015, 0.05, below);
     let fog = 1.0 - smoothstep(0.03, 0.22, abs(uv.y - horizon));
     let fog_color = vec3(0.13, 0.85, 0.85);
 
@@ -128,44 +133,50 @@ fn fragment(in: UiVertexOutput) -> @location(0) vec4<f32> {
     let depth_haze = smoothstep(0.10, 0.55, uv.y);
     col = col + vec3(0.008, 0.062, 0.075) * depth_haze;
 
-    // 透视网格地板（前景视差）：静止网格；水滴折射式弯曲随距离增大，远处更明显
-    let floor_uv = uv + parallax_fg;
-    let depth = 0.10 / max(floor_uv.y - horizon, 0.003);
-    let xw = (floor_uv.x - 0.5) * aspect * depth * 2.2;
-    let bend_k = 0.35 + 0.65 * smoothstep(0.10, 0.90, depth);
-    let wave = (sin(xw * 2.0 + t * 0.30) * 0.06 + sin(depth * 1.8 - t * 0.22) * 0.05) * bend_k;
-    let z_line = depth * 2.4 + wave * 1.2;
-    let gz = abs(fract(z_line * 4.0 + 0.5) - 0.5);
-    let bend = 0.06 * smoothstep(0.05, 0.90, depth);
-    let wave_x = (sin(depth * 1.1 + t * 0.18) * 0.6 + sin(xw * 1.1 - t * 0.13) * 0.4) * bend;
-    let gx = abs(fract((xw + wave_x) * 4.4 + 0.5) - 0.5);
-    let line_w = 0.007 + depth * 0.004;
-    var line = (1.0 - smoothstep(0.0, line_w, gz)) * 0.75 + (1.0 - smoothstep(0.0, line_w * 0.9, gx));
-    line = line * smoothstep(0.0, 0.04, below) * (1.0 - fog);
-    let floor_shimmer = textureSample(noise_tex, noise_smp, floor_uv * 3.0 + vec2(t * 0.02, 0.0)).r * (1.0 - fog * 0.5);
-    let floor_base = vec3(0.0018, 0.0105, 0.0243) + vec3(0.015, 0.055, 0.10) * floor_shimmer * 0.10;
-    col = mix(col, floor_base, floor_mask);
-    col = col + vec3(0.10, 0.32, 0.40) * line * floor_mask * 0.65;
+    // 透视网格地板（前景视差）：floor_mask 在 below<=0.0 时恒为 0，
+    // 整个地板 block 可跳过（mix(col, x, 0) == col 精确成立）。
+    let floor_mask = smoothstep(-0.015, 0.05, below);
+    if (floor_mask > 0.0) {
+        let floor_uv = uv + parallax_fg;
+        let depth = 0.10 / max(floor_uv.y - horizon, 0.003);
+        let xw = (floor_uv.x - 0.5) * aspect * depth * 2.2;
+        let bend_k = 0.35 + 0.65 * smoothstep(0.10, 0.90, depth);
+        let wave = (sin(xw * 2.0 + t * 0.30) * 0.06 + sin(depth * 1.8 - t * 0.22) * 0.05) * bend_k;
+        let z_line = depth * 2.4 + wave * 1.2;
+        let gz = abs(fract(z_line * 4.0 + 0.5) - 0.5);
+        let bend = 0.06 * smoothstep(0.05, 0.90, depth);
+        let wave_x = (sin(depth * 1.1 + t * 0.18) * 0.6 + sin(xw * 1.1 - t * 0.13) * 0.4) * bend;
+        let gx = abs(fract((xw + wave_x) * 4.4 + 0.5) - 0.5);
+        let line_w = 0.007 + depth * 0.004;
+        var line = (1.0 - smoothstep(0.0, line_w, gz)) * 0.75 + (1.0 - smoothstep(0.0, line_w * 0.9, gx));
+        line = line * smoothstep(0.0, 0.04, below) * (1.0 - fog);
+        let floor_shimmer = textureSample(noise_tex, noise_smp, floor_uv * 3.0 + vec2(t * 0.02, 0.0)).r * (1.0 - fog * 0.5);
+        let floor_base = vec3(0.0018, 0.0105, 0.0243) + vec3(0.015, 0.055, 0.10) * floor_shimmer * 0.10;
+        col = mix(col, floor_base, floor_mask);
+        col = col + vec3(0.10, 0.32, 0.40) * line * floor_mask * 0.65;
+    }
 
-    // 光柱系统：宽无缝光组 + 单一窄束；宽度/亮度/色相/落地距离/弯曲各自独立
+    // 光柱系统：env 包络在 uv.y>0.81 时恒为 0（顶部约 19% 像素可跳过 12 束全部计算）。
     // 运动 = 微妙整体平移 + 小幅周期旋转（约5°），非大幅摆动
-    let beam_auv = auv + parallax_mid * 2.0 + vec2(sin(t * 6.28318 / 47.0 + 0.6) * 0.025, 0.0);
-    let sway = sin(t * 6.28318 / 20.0) * 0.08 + sin(t * 6.28318 / 33.0 + 1.7) * 0.03;
-    var beams = beam_column3(t, beam_auv.x, uv.y, horizon, sway, 0.030 + 0.015 * sin(t * 0.05 + 1.7), 1.7, 0.045 * aspect, 0.050, 0.12, 0.80, 0.030 * (0.75 + 0.25 * sin(t * 0.06 + 1.0)), 0.78, vec3(0.30, 0.80, 0.96));
-    beams = beams + beam_column3(t, beam_auv.x, uv.y, horizon, sway, 0.030 + 0.015 * sin(t * 0.05 + 3.4), 3.4, 0.100 * aspect, 0.060, 0.13, 1.00, -0.020 * (0.75 + 0.25 * sin(t * 0.06 + 2.0)), 0.76, vec3(0.34, 0.84, 0.98));
-    beams = beams + beam_column3(t, beam_auv.x, uv.y, horizon, sway, 0.030 + 0.015 * sin(t * 0.05 + 5.1), 5.1, 0.155 * aspect, 0.050, 0.12, 0.70, 0.050 * (0.75 + 0.25 * sin(t * 0.06 + 3.0)), 0.80, vec3(0.28, 0.76, 0.94));
-    beams = beams + beam_column3(t, beam_auv.x, uv.y, horizon, sway, 0.030 + 0.015 * sin(t * 0.05 + 6.8), 6.8, 0.300 * aspect, 0.045, 0.10, 0.90, -0.040 * (0.75 + 0.25 * sin(t * 0.06 + 4.0)), 0.74, vec3(0.36, 0.86, 1.00));
-    beams = beams + beam_column3(t, beam_auv.x, uv.y, horizon, sway, 0.030 + 0.015 * sin(t * 0.05 + 8.5), 8.5, 0.355 * aspect, 0.060, 0.12, 1.15, 0.020 * (0.75 + 0.25 * sin(t * 0.06 + 5.0)), 0.78, vec3(0.40, 0.90, 1.00));
-    beams = beams + beam_column3(t, beam_auv.x, uv.y, horizon, sway, 0.030 + 0.015 * sin(t * 0.05 + 10.2), 10.2, 0.410 * aspect, 0.045, 0.10, 0.85, -0.030 * (0.75 + 0.25 * sin(t * 0.06 + 6.0)), 0.75, vec3(0.32, 0.82, 0.98));
-    beams = beams + beam_column3(t, beam_auv.x, uv.y, horizon, sway, 0.030 + 0.015 * sin(t * 0.05 + 11.9), 11.9, 0.520 * aspect, 0.028, 0.06, 0.55, 0.060 * (0.75 + 0.25 * sin(t * 0.06 + 7.0)), 0.72, vec3(0.30, 0.78, 0.95));
-    beams = beams + beam_column3(t, beam_auv.x, uv.y, horizon, sway, 0.030 + 0.015 * sin(t * 0.05 + 13.6), 13.6, 0.600 * aspect, 0.032, 0.07, 0.75, -0.050 * (0.75 + 0.25 * sin(t * 0.06 + 8.0)), 0.77, vec3(0.35, 0.83, 0.96));
-    beams = beams + beam_column3(t, beam_auv.x, uv.y, horizon, sway, 0.030 + 0.015 * sin(t * 0.05 + 15.3), 15.3, 0.700 * aspect, 0.050, 0.11, 0.80, 0.040 * (0.75 + 0.25 * sin(t * 0.06 + 9.0)), 0.79, vec3(0.31, 0.80, 0.97));
-    beams = beams + beam_column3(t, beam_auv.x, uv.y, horizon, sway, 0.030 + 0.015 * sin(t * 0.05 + 17.0), 17.0, 0.760 * aspect, 0.055, 0.12, 1.05, -0.030 * (0.75 + 0.25 * sin(t * 0.06 + 10.0)), 0.75, vec3(0.37, 0.87, 0.99));
-    beams = beams + beam_column3(t, beam_auv.x, uv.y, horizon, sway, 0.030 + 0.015 * sin(t * 0.05 + 18.7), 18.7, 0.815 * aspect, 0.045, 0.10, 0.75, 0.050 * (0.75 + 0.25 * sin(t * 0.06 + 11.0)), 0.78, vec3(0.29, 0.77, 0.95));
-    beams = beams + beam_column3(t, beam_auv.x, uv.y, horizon, sway, 0.030 + 0.015 * sin(t * 0.05 + 20.4), 20.4, 0.870 * aspect, 0.040, 0.09, 0.60, -0.040 * (0.75 + 0.25 * sin(t * 0.06 + 12.0)), 0.81, vec3(0.33, 0.82, 0.94));
-    beams = beams * (0.60 + 0.40 * (1.0 - uv.y));
-    // 光柱增益：R 压抑、G/B 提亮，亮核推向 #81FFFF 纯青（亮度系数保留手动调校值）
-    col = col + beams * vec3(0.55, 1.30, 1.30) * 0.168;
+    if (uv.y < 0.82) {
+        let beam_auv = auv + parallax_mid * 2.0 + vec2(sin(t * 6.28318 / 47.0 + 0.6) * 0.025, 0.0);
+        let sway = sin(t * 6.28318 / 20.0) * 0.08 + sin(t * 6.28318 / 33.0 + 1.7) * 0.03;
+        var beams = beam_column3(t, beam_auv.x, uv.y, horizon, sway, 0.030 + 0.015 * sin(t * 0.05 + 1.7), 1.7, 0.045 * aspect, 0.050, 0.12, 0.80, 0.030 * (0.75 + 0.25 * sin(t * 0.06 + 1.0)), 0.78, vec3(0.30, 0.80, 0.96));
+        beams = beams + beam_column3(t, beam_auv.x, uv.y, horizon, sway, 0.030 + 0.015 * sin(t * 0.05 + 3.4), 3.4, 0.100 * aspect, 0.060, 0.13, 1.00, -0.020 * (0.75 + 0.25 * sin(t * 0.06 + 2.0)), 0.76, vec3(0.34, 0.84, 0.98));
+        beams = beams + beam_column3(t, beam_auv.x, uv.y, horizon, sway, 0.030 + 0.015 * sin(t * 0.05 + 5.1), 5.1, 0.155 * aspect, 0.050, 0.12, 0.70, 0.050 * (0.75 + 0.25 * sin(t * 0.06 + 3.0)), 0.80, vec3(0.28, 0.76, 0.94));
+        beams = beams + beam_column3(t, beam_auv.x, uv.y, horizon, sway, 0.030 + 0.015 * sin(t * 0.05 + 6.8), 6.8, 0.300 * aspect, 0.045, 0.10, 0.90, -0.040 * (0.75 + 0.25 * sin(t * 0.06 + 4.0)), 0.74, vec3(0.36, 0.86, 1.00));
+        beams = beams + beam_column3(t, beam_auv.x, uv.y, horizon, sway, 0.030 + 0.015 * sin(t * 0.05 + 8.5), 8.5, 0.355 * aspect, 0.060, 0.12, 1.15, 0.020 * (0.75 + 0.25 * sin(t * 0.06 + 5.0)), 0.78, vec3(0.40, 0.90, 1.00));
+        beams = beams + beam_column3(t, beam_auv.x, uv.y, horizon, sway, 0.030 + 0.015 * sin(t * 0.05 + 10.2), 10.2, 0.410 * aspect, 0.045, 0.10, 0.85, -0.030 * (0.75 + 0.25 * sin(t * 0.06 + 6.0)), 0.75, vec3(0.32, 0.82, 0.98));
+        beams = beams + beam_column3(t, beam_auv.x, uv.y, horizon, sway, 0.030 + 0.015 * sin(t * 0.05 + 11.9), 11.9, 0.520 * aspect, 0.028, 0.06, 0.55, 0.060 * (0.75 + 0.25 * sin(t * 0.06 + 7.0)), 0.72, vec3(0.30, 0.78, 0.95));
+        beams = beams + beam_column3(t, beam_auv.x, uv.y, horizon, sway, 0.030 + 0.015 * sin(t * 0.05 + 13.6), 13.6, 0.600 * aspect, 0.032, 0.07, 0.75, -0.050 * (0.75 + 0.25 * sin(t * 0.06 + 8.0)), 0.77, vec3(0.35, 0.83, 0.96));
+        beams = beams + beam_column3(t, beam_auv.x, uv.y, horizon, sway, 0.030 + 0.015 * sin(t * 0.05 + 15.3), 15.3, 0.700 * aspect, 0.050, 0.11, 0.80, 0.040 * (0.75 + 0.25 * sin(t * 0.06 + 9.0)), 0.79, vec3(0.31, 0.80, 0.97));
+        beams = beams + beam_column3(t, beam_auv.x, uv.y, horizon, sway, 0.030 + 0.015 * sin(t * 0.05 + 17.0), 17.0, 0.760 * aspect, 0.055, 0.12, 1.05, -0.030 * (0.75 + 0.25 * sin(t * 0.06 + 10.0)), 0.75, vec3(0.37, 0.87, 0.99));
+        beams = beams + beam_column3(t, beam_auv.x, uv.y, horizon, sway, 0.030 + 0.015 * sin(t * 0.05 + 18.7), 18.7, 0.815 * aspect, 0.045, 0.10, 0.75, 0.050 * (0.75 + 0.25 * sin(t * 0.06 + 11.0)), 0.78, vec3(0.29, 0.77, 0.95));
+        beams = beams + beam_column3(t, beam_auv.x, uv.y, horizon, sway, 0.030 + 0.015 * sin(t * 0.05 + 20.4), 20.4, 0.870 * aspect, 0.040, 0.09, 0.60, -0.040 * (0.75 + 0.25 * sin(t * 0.06 + 12.0)), 0.81, vec3(0.33, 0.82, 0.94));
+        beams = beams * (0.60 + 0.40 * (1.0 - uv.y));
+        // 光柱增益：R 压抑、G/B 提亮，亮核推向 #81FFFF 纯青（亮度系数保留手动调校值）
+        col = col + beams * vec3(0.55, 1.30, 1.30) * 0.168;
+    }
 
     // 移动点光源：三盏缓游的微小亮光源，增强空间立体感
     let pl1 = vec2(aspect * (0.42 + 0.10 * sin(t * 0.11)), 0.30 + 0.10 * sin(t * 0.07 + 2.0));

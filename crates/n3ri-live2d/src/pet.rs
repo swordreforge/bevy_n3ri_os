@@ -28,6 +28,27 @@ const SLEEP_TIMEOUT: f32 = 15.0;
 const PET_COOLDOWN: f32 = 3.0;
 const PETTING_EXPRESSIONS: &[&str] = &["02_Dizzy", "04_Shy", "07_Smile", "13_Happy"];
 
+/// 动作切换交叉淡化时长（秒）。FFI 时代走 MotionQueueManager（queue 语义，
+/// 新旧动作重叠混合）；mocari 的 MotionPlayer 没有 queue 语义（fade 秒数
+/// 硬编码 0 → 首帧即全权重），单槽替换会瞬切。这里手动补回交叉淡化。
+const MOTION_CROSSFADE_SECS: f32 = 0.5;
+
+/// 正在淡出的旧动作：与新动作并行 tick+apply，权重 start_w→0、新动作 0→1，
+/// apply 顺序旧先新后，逐帧交叉混合。
+struct FadingMotion {
+    player: MotionPlayer,
+    t: f32,
+    dur: f32,
+    start_w: f32,
+}
+
+/// 交叉淡化权重：旧 start_w→0、新 0→1（线性；0.5s 内人眼对线性/正弦无可辨
+/// 差异，线性保证首帧即动、无 sine 头段"静止期"）。
+fn crossfade_weights(t: f32, dur: f32, start_w: f32) -> (f32, f32) {
+    let k = (t / dur).clamp(0.0, 1.0);
+    (start_w * (1.0 - k), k)
+}
+
 /// Breath parameter definition, ported from live2d-motion's `Breath`
 /// (LAppModel defaults). Adds subtle sinusoidal oscillation, applied as
 /// additive deltas after motions.
@@ -136,6 +157,8 @@ pub struct Live2dPet {
 
     pub(crate) players: Vec<MotionPlayer>,
     pub(crate) breath: BreathParamState,
+    /// 切换中淡出的旧动作（None = 无切换，稳态单动作）。
+    fading: Vec<FadingMotion>,
 
     pub idle_motion: Option<Motion3>,
     pub sleep_motion: Option<Motion3>,
@@ -158,6 +181,7 @@ impl Live2dPet {
             texture_paths,
             players,
             breath: BreathParamState::new(),
+            fading: Vec::new(),
             idle_motion,
             sleep_motion,
             expressions,
@@ -173,15 +197,38 @@ impl Live2dPet {
         for p in self.players.iter_mut() {
             p.tick(dt);
         }
+        for f in self.fading.iter_mut() {
+            f.player.tick(dt);
+            f.t += dt;
+        }
         self.expression_manager.tick(dt);
 
         // LoadParameters: restart the frame from model defaults so one-shot
         // and looping motions blend the same way every frame.
         self.runtime.reset_parameters();
 
+        // 淡出栈先 apply（旧权重），再 apply 新动作——后写的覆盖/混合，
+        // 与 FFI queue 的"新动作压住旧动作"语义一致。
+        for f in self.fading.iter_mut() {
+            let (old_w, _) = crossfade_weights(f.t, f.dur, f.start_w);
+            f.player.set_weight(old_w);
+            f.player.apply(&mut self.runtime);
+        }
+        // 新动作权重 0→1：有淡出栈时按最长者推进，无切换时恒 1。
+        if let Some(f) = self.fading.iter().max_by(|a, b| {
+            a.dur
+                .partial_cmp(&b.dur)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        }) {
+            let (_, new_w) = crossfade_weights(f.t, f.dur, 1.0);
+            self.players[IDLE_QUEUE_INDEX].set_weight(new_w);
+        } else if !self.players.is_empty() {
+            self.players[IDLE_QUEUE_INDEX].set_weight(1.0);
+        }
         for p in self.players.iter() {
             p.apply(&mut self.runtime);
         }
+        self.fading.retain(|f| f.t < f.dur);
 
         self.breath.update(dt, &mut self.runtime);
 
@@ -198,12 +245,26 @@ impl Live2dPet {
     }
 
     fn play_idle_slot(&mut self, motion: Option<Motion3>) {
-        if let Some(motion) = motion {
-            if self.players.is_empty() {
-                self.players.push(MotionPlayer::new(motion.clone()));
-            }
-            self.players[IDLE_QUEUE_INDEX] = MotionPlayer::new(motion);
+        let Some(motion) = motion else {
+            return;
+        };
+        if self.players.is_empty() {
+            self.players.push(MotionPlayer::new(motion.clone()));
         }
+        // 旧动作进淡出栈（记录当前权重，0.5s 内与新动作交叉混合）；
+        // 新动作权重从 0 起淡入。稳态（无切换）保持 weight=1 零开销。
+        let old = std::mem::replace(
+            &mut self.players[IDLE_QUEUE_INDEX],
+            MotionPlayer::new(motion),
+        );
+        let start_w = old.weight();
+        self.players[IDLE_QUEUE_INDEX].set_weight(0.0);
+        self.fading.push(FadingMotion {
+            player: old,
+            t: 0.0,
+            dur: MOTION_CROSSFADE_SECS,
+            start_w,
+        });
     }
 
     pub fn switch_to_idle(&mut self) {

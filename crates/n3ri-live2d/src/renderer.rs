@@ -64,6 +64,9 @@ pub const PET_DISPLAY_RATIO: f32 = 0.75;
 /// RTT 扩容防抖：目标持续大于当前分辨率该秒数后才扩容（拖拽放大过程不逐帧重建）
 const GROW_DEBOUNCE_SECS: f32 = 0.5;
 
+/// mask RTT 各边降采样系数（形状是低通 alpha，半分辨率对视觉无差，GPU 显存/填充率降至 ~1/4）
+const MASK_RTT_SCALE: f32 = 0.5;
+
 #[derive(Resource, Clone, Copy)]
 pub struct PetViewSize {
     pub w: u32,
@@ -574,12 +577,16 @@ pub fn load_and_setup_pet(world: &mut World) {
     let mut group_rtts: Vec<Handle<Image>> = vec![Handle::default(); num_groups];
     // 4 组打包进一张 RTT 的 RGB 四通道：25 组 → 7 个单元（RTT+相机+pass），
     // 同单元 4 组各写各的通道（见 `BlendKind::write_mask`），互不干扰。
+    // mask RTT 只存低通 alpha 形状，按 MASK_RTT_SCALE 降分辨率（GPU 显存/填充率
+    // 降至 ~1/4）；相机用 Fixed(view_w, view_h) 投影把完整世界映射到小目标上，
+    // shader 按归一化 uv 采样（mesh.world_position / vp.xy），视觉无差。
     for (p, chunk) in group_sources.chunks(MASK_LANES).enumerate() {
+        let (mask_w, mask_h) = mask_rt_size(view_w, view_h);
         let rtt_h = world
             .resource_mut::<Assets<Image>>()
             .add(Image::new_target_texture(
-                view_w,
-                view_h,
+                mask_w,
+                mask_h,
                 TextureFormat::Bgra8UnormSrgb,
                 None,
             ));
@@ -603,6 +610,14 @@ pub fn load_and_setup_pet(world: &mut World) {
                 Transform::from_xyz(view_w as f32 * 0.5, view_h as f32 * 0.5, 1000.0),
             ))
             .id();
+        if let Some(mut proj) = world.get_mut::<Projection>(cam) {
+            if let Projection::Orthographic(ref mut ortho) = *proj {
+                ortho.scaling_mode = ScalingMode::Fixed {
+                    width: view_w as f32,
+                    height: view_h as f32,
+                };
+            }
+        }
 
         for (lane, sources) in chunk.iter().enumerate() {
             let g = p * MASK_LANES + lane;
@@ -712,6 +727,14 @@ fn rt_resize(img: &mut Image, w: u32, h: u32) {
     };
 }
 
+/// mask RTT 降采样后的目标尺寸（各边 × MASK_RTT_SCALE，至少 1px）。
+fn mask_rt_size(w: u32, h: u32) -> (u32, u32) {
+    (
+        ((w as f32 * MASK_RTT_SCALE).round() as u32).max(1),
+        ((h as f32 * MASK_RTT_SCALE).round() as u32).max(1),
+    )
+}
+
 // ── per-frame systems ──
 
 /// 运行时重适配：目标区域变化时同步 RTT 尺寸、相机、PetMapping、材质 viewport、
@@ -788,12 +811,19 @@ pub(crate) fn refit_pet_view(
     }
 
     if let Some(render_rig) = render_rig.as_ref() {
+        let (mask_w, mask_h) = mask_rt_size(w, h);
         for group in &render_rig._mask_groups {
             if let Some(mut img) = images.get_mut(&group._rtt_handle) {
-                rt_resize(&mut img, w, h);
+                rt_resize(&mut img, mask_w, mask_h);
             }
-            if let Ok((mut tf, _)) = cameras.get_mut(group._camera_entity) {
+            if let Ok((mut tf, mut proj)) = cameras.get_mut(group._camera_entity) {
                 tf.translation = Vec3::new(w as f32 * 0.5, h as f32 * 0.5, 1000.0);
+                if let Projection::Orthographic(ref mut ortho) = *proj {
+                    ortho.scaling_mode = ScalingMode::Fixed {
+                        width: w as f32,
+                        height: h as f32,
+                    };
+                }
             }
         }
         for (_, _, _, mat_h) in &render_rig.slots {

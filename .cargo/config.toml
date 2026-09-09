@@ -1,3 +1,7 @@
 # 偶发启动 panic 无法按需复现——全局开启完整回栈,便于事后定位
 [env]
 RUST_BACKTRACE = "full"
+# 内存实验（可回退）：jemalloc 后台线程 2s 衰减周期，让空闲 arena dirty 页归还 OS。
+# 注意 tikv-jemalloc 用 --with-malloc-conf 编译期固化配置，运行期 MALLOC_CONF 被忽略，
+# 只能经此 env 在构建期注入（对 servo-allocator 引入的全局 jemalloc 同样生效）。
+JEMALLOC_SYS_WITH_MALLOC_CONF = "background_thread:true,dirty_decay_ms:2000,muzzy_decay_ms:2000"

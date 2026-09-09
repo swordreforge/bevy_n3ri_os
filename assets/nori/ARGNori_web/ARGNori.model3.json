@@ -3,9 +3,9 @@
 	"FileReferences": {
 		"Moc": "ARGNori.moc3",
 		"Textures": [
-			"ARGNori.4096/texture_00.png",
-			"ARGNori.4096/texture_01.png",
-			"ARGNori.4096/texture_02.png"
+			"ARGNori.4096/texture_00.ktx2",
+			"ARGNori.4096/texture_01.ktx2",
+			"ARGNori.4096/texture_02.ktx2"
 		],
 		"Physics": "ARGNori.physics3.json",
 		"DisplayInfo": "ARGNori.cdi3.json",

@@ -14,7 +14,9 @@ bevy = { workspace = true, features = [
     "bevy_sprite_render",
     "bevy_text",
     "bevy_window",
-    "png",
+    "ktx2",
+    "basis-universal",
+    "zstd_rust",
 ] }
 mocari = { version = "0.4.0", default-features = false }
 bevy_tweening = { workspace = true }
@@ -24,6 +26,14 @@ serde_json = "1"
 [features]
 embed-model = []
 
+[dev-dependencies]
+bevy_asset = "0.19"
+bevy_image = { version = "0.19", features = ["ktx2", "basis-universal", "zstd_rust"] }
+
 [[example]]
-name = "probe"
-path = "examples/probe.rs"
+name = "mocari_probe"
+path = "examples/mocari_probe.rs"
+
+[[example]]
+name = "smoke"
+path = "examples/smoke.rs"

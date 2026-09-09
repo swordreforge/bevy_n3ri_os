@@ -79,8 +79,36 @@ fn dump_drawables(tag: &str, model: &mocari::ModelRuntime) {
 }
 
 fn main() {
-    let model3 = find_asset("nori/ARGNori_web/ARGNori.model3.json").expect("model3.json");
-    let mut model = load_model_runtime(&model3).expect("load_model_runtime");
+    let model3_path = find_asset("nori/ARGNori_web/ARGNori.model3.json").expect("model3.json");
+    // KTX2 纹理 probe：mocari 只解 PNG，先用 PNG 副本验证 moc/runtime 链路；
+    // 像素链路由 ktx2_decode_test 覆盖（见同目录 live2d_ktx2.rs）。
+    let png_dir = std::env::temp_dir().join("n3ri_probe_png");
+    std::fs::create_dir_all(png_dir.join("ARGNori.4096")).expect("probe tmpdir");
+    let src_dir = model3_path.parent().unwrap().to_path_buf();
+    let mut model3_src = std::fs::read_to_string(&model3_path).expect("read model3.json");
+    let mut tex_names: Vec<String> = Vec::new();
+    for entry in std::fs::read_dir(src_dir.join("ARGNori.4096")).expect("tex dir") {
+        let p = entry.expect("tex entry").path();
+        if p.extension().is_some_and(|e| e == "png")
+            && !p.file_name().is_some_and(|n| n.to_string_lossy().contains("corrupt"))
+        {
+            let name = p.file_name().unwrap().to_string_lossy().into_owned();
+            std::fs::copy(&p, png_dir.join("ARGNori.4096").join(&name)).expect("copy probe png");
+            tex_names.push(format!("ARGNori.4096/{name}"));
+        }
+    }
+    tex_names.sort();
+    for name in &tex_names {
+        let ktx = name.replace(".png", ".ktx2");
+        model3_src = model3_src.replace(&ktx, name);
+    }
+    // moc 相对 model3.json 同目录引用，一并复制。
+    for f in ["ARGNori.moc3", "ARGNori.physics3.json", "ARGNori.cdi3.json"] {
+        std::fs::copy(src_dir.join(f), png_dir.join(f)).expect("copy probe model file");
+    }
+    let probe_model3 = png_dir.join("ARGNori.model3.json");
+    std::fs::write(&probe_model3, &model3_src).expect("write probe model3");
+    let mut model = load_model_runtime(&probe_model3).expect("load_model_runtime");
     let rt = model.runtime_mut();
 
     let canvas = rt.canvas();
@@ -131,7 +159,7 @@ fn main() {
     println!("probe d0 v0 = ({:+.5}, {:+.5})", p0[0], p0[1]);
 
     // Idle motion — model3 declares FadeIn 5.0 / FadeOut 0.5 for 01_Idle_Loop
-    let dir = model3.parent().unwrap().to_path_buf();
+    let dir = model3_path.parent().unwrap().to_path_buf();
     let idle_path = dir.join("motions/01_Idle_Loop.motion3.json");
     let motion = load_motion(&idle_path).expect("load idle");
     println!(

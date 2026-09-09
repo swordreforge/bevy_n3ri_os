@@ -56,10 +56,10 @@ struct FileReferences {
 #[serde(rename_all = "PascalCase")]
 struct MotionRef {
     file: String,
-    // model3-level fade overrides: mocari's Model3 manifest drops them, and
-    // per-curve fades drive the actual blend — parsed but intentionally unused.
-    #[allow(dead_code)]
+    // model3 级淡入秒数：mocari manifest 会丢掉，stash 进 PetMotion
+    // 供 play_idle_slot 做交叉淡化（FFI 时代传给 CubismMotion::new）。
     fade_in_time: Option<f32>,
+    // 淡出由交叉淡化的对侧权重覆盖，解析保留仅作兼容。
     #[allow(dead_code)]
     fade_out_time: Option<f32>,
 }
@@ -228,10 +228,11 @@ pub fn load_pet() -> Result<Live2dPet, String> {
 
     // Motion players — one per concurrent group. mocari's Model3 manifest
     // drops model3-level FadeIn/FadeOut overrides, so we stash the declared
-    // fades per group (currently only informational).
+    // fade-in alongside the motion (FFI passed it to CubismMotion::new;
+    // pet::play_idle_slot consumes it for the crossfade duration).
     let mut players: Vec<MotionPlayer> = Vec::new();
-    let mut idle_motion: Option<Motion3> = None;
-    let mut sleep_motion: Option<Motion3> = None;
+    let mut idle_motion: Option<crate::pet::PetMotion> = None;
+    let mut sleep_motion: Option<crate::pet::PetMotion> = None;
 
     for group in CONCURRENT_GROUPS {
         let Some(refs) = model3.file_references.motions.get(group) else {
@@ -264,12 +265,22 @@ pub fn load_pet() -> Result<Live2dPet, String> {
         players.push(MotionPlayer::new(motion.clone()));
 
         if group == "Idle" {
-            idle_motion = Some(motion);
+            idle_motion = Some(crate::pet::PetMotion {
+                motion,
+                fade_in_secs: first.fade_in_time.unwrap_or(
+                    crate::pet::MOTION_CROSSFADE_FALLBACK_SECS,
+                ),
+            });
             if let Some(sleep_ref) = refs.iter().find(|r| r.file.contains("sleep")) {
                 if let Ok(sleep_bytes) = read_model_file(disk_dir, &sleep_ref.file) {
                     if let Ok(sleep_text) = std::str::from_utf8(&sleep_bytes) {
                         if let Ok(sleep_parsed) = Motion3::from_json_str(sleep_text) {
-                            sleep_motion = Some(sleep_parsed);
+                            sleep_motion = Some(crate::pet::PetMotion {
+                                motion: sleep_parsed,
+                                fade_in_secs: sleep_ref.fade_in_time.unwrap_or(
+                                    crate::pet::MOTION_CROSSFADE_FALLBACK_SECS,
+                                ),
+                            });
                         }
                     }
                 }

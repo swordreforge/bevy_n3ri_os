@@ -31,7 +31,18 @@ const PETTING_EXPRESSIONS: &[&str] = &["02_Dizzy", "04_Shy", "07_Smile", "13_Hap
 /// 动作切换交叉淡化时长（秒）。FFI 时代走 MotionQueueManager（queue 语义，
 /// 新旧动作重叠混合）；mocari 的 MotionPlayer 没有 queue 语义（fade 秒数
 /// 硬编码 0 → 首帧即全权重），单槽替换会瞬切。这里手动补回交叉淡化。
-const MOTION_CROSSFADE_SECS: f32 = 0.5;
+/// 时长取 model3.json 对应条目的 FadeInTime（sleep=10s / idle=5s），
+/// 缺省回退 0.5s——与 FFI 时代 `unwrap_or(1.0)` 不同，0.5s 更接近 queue
+/// 对缺省条目的实际体感（queue 的淡入按目标动作首段曲线斜率自然展开）。
+pub const MOTION_CROSSFADE_FALLBACK_SECS: f32 = 0.5;
+
+/// model3.json  motion 条目：动作 + 声明的淡入秒数（FFI 时代传给
+/// CubismMotion::new 的 fade_in_time，mocari manifest 会丢掉， stash 在此）。
+#[derive(Clone)]
+pub struct PetMotion {
+    pub motion: Motion3,
+    pub fade_in_secs: f32,
+}
 
 /// 正在淡出的旧动作：与新动作并行 tick+apply，权重 start_w→0、新动作 0→1，
 /// apply 顺序旧先新后，逐帧交叉混合。
@@ -160,8 +171,8 @@ pub struct Live2dPet {
     /// 切换中淡出的旧动作（None = 无切换，稳态单动作）。
     fading: Vec<FadingMotion>,
 
-    pub idle_motion: Option<Motion3>,
-    pub sleep_motion: Option<Motion3>,
+    pub idle_motion: Option<PetMotion>,
+    pub sleep_motion: Option<PetMotion>,
 
     pub expressions: HashMap<String, Expression3>,
     pub expression_manager: ExpressionManager,
@@ -172,8 +183,8 @@ impl Live2dPet {
         runtime: ModelRuntime,
         texture_paths: Vec<String>,
         players: Vec<MotionPlayer>,
-        idle_motion: Option<Motion3>,
-        sleep_motion: Option<Motion3>,
+        idle_motion: Option<PetMotion>,
+        sleep_motion: Option<PetMotion>,
         expressions: HashMap<String, Expression3>,
     ) -> Self {
         Self {
@@ -244,25 +255,27 @@ impl Live2dPet {
         self.runtime.meshes().len()
     }
 
-    fn play_idle_slot(&mut self, motion: Option<Motion3>) {
-        let Some(motion) = motion else {
+    fn play_idle_slot(&mut self, motion: Option<PetMotion>) {
+        let Some(pet_motion) = motion else {
             return;
         };
         if self.players.is_empty() {
-            self.players.push(MotionPlayer::new(motion.clone()));
+            self.players.push(MotionPlayer::new(pet_motion.motion.clone()));
         }
-        // 旧动作进淡出栈（记录当前权重，0.5s 内与新动作交叉混合）；
-        // 新动作权重从 0 起淡入。稳态（无切换）保持 weight=1 零开销。
+        // 旧动作进淡出栈（记录当前权重，与新动作交叉混合 dur 秒）；
+        // 新动作权重从 0 起淡入。dur 取 model3.json 声明的 FadeInTime，
+        // 与 FFI queue 语义一致（sleep=10s / idle=5s）。
+        // 稳态（无切换）保持 weight=1 零开销。
         let old = std::mem::replace(
             &mut self.players[IDLE_QUEUE_INDEX],
-            MotionPlayer::new(motion),
+            MotionPlayer::new(pet_motion.motion),
         );
         let start_w = old.weight();
         self.players[IDLE_QUEUE_INDEX].set_weight(0.0);
         self.fading.push(FadingMotion {
             player: old,
             t: 0.0,
-            dur: MOTION_CROSSFADE_SECS,
+            dur: pet_motion.fade_in_secs.max(0.0),
             start_w,
         });
     }

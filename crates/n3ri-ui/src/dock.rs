@@ -4,7 +4,9 @@ use std::collections::HashMap;
 
 use crate::cursor::{cursor_changed, CursorPosition, UiArea};
 use crate::font::N3riFonts;
-use crate::window::AppWindow;
+use crate::window::{AppWindow, WindowDrag};
+use crate::window_anim::{self, WindowAnimating, WindowMinimizing};
+use bevy_tweening::TweenAnim;
 
 pub struct DockPlugin;
 
@@ -312,8 +314,16 @@ fn dock_magnification(
 #[allow(clippy::type_complexity)]
 fn dock_update(
     mouse: Res<ButtonInput<MouseButton>>,
-    icon_query: Query<(Entity, &DockIcon, &Interaction, &Children)>,
-    mut window_query: Query<(Entity, &AppWindow, &mut AppVisible)>,
+    icon_query: Query<(Entity, &DockIcon, &Interaction, &Children, &UiGlobalTransform)>,
+    mut window_query: Query<(
+        Entity,
+        &AppWindow,
+        &mut AppVisible,
+        &UiTransform,
+        &UiGlobalTransform,
+        &ComputedNode,
+    )>,
+    busy_query: Query<(), With<WindowAnimating>>,
     changed_windows: Query<
         (),
         (
@@ -333,24 +343,48 @@ fn dock_update(
     mut removed: RemovedComponents<AppWindow>,
 ) {
     if mouse.just_pressed(MouseButton::Left) {
-        for (_, icon, interaction, _) in icon_query.iter() {
+        for (_, icon, interaction, _, icon_tf) in icon_query.iter() {
             if *interaction != Interaction::Pressed {
                 continue;
             }
 
             let mut found = false;
-            for (entity, app_window, mut visible) in window_query.iter_mut() {
-                if app_window.app_id == icon.app_name {
-                    visible.0 = !visible.0;
-                    let new_vis = if visible.0 {
-                        Visibility::Inherited
-                    } else {
-                        Visibility::Hidden
-                    };
-                    commands.entity(entity).insert(new_vis);
-                    found = true;
+            for (entity, app_window, mut visible, transform, global, node) in
+                window_query.iter_mut()
+            {
+                if app_window.app_id != icon.app_name {
+                    continue;
+                }
+                found = true;
+                // 关闭/最小化动画进行中：不重复触发
+                if busy_query.get(entity).is_ok() {
                     break;
                 }
+                if visible.0 {
+                    // 显示中 → 缩向 dock 图标（与标题栏最小化按钮同款）
+                    let delta = window_anim::dock_delta(
+                        node.inverse_scale_factor,
+                        global.translation,
+                        icon_tf.translation,
+                    );
+                    commands
+                        .entity(entity)
+                        .insert((
+                            TweenAnim::new(window_anim::minimize_tween(transform, delta)),
+                            WindowMinimizing,
+                            WindowAnimating,
+                        ))
+                        .remove::<WindowDrag>();
+                } else {
+                    // 隐藏中 → 从 dock 图标处放大还原
+                    visible.0 = true;
+                    commands.entity(entity).insert((
+                        Visibility::Inherited,
+                        TweenAnim::new(window_anim::restore_tween(transform)),
+                        WindowAnimating,
+                    ));
+                }
+                break;
             }
 
             if !found {
@@ -440,10 +474,10 @@ fn dock_update(
         return;
     }
 
-    for (entity, icon, _, children) in icon_query.iter() {
-        let is_running = window_query.iter().any(|(_, w, vis)| {
-            w.app_id == icon.app_name && vis.0
-        });
+    for (entity, icon, _, children, _) in icon_query.iter() {
+        let is_running = window_query
+            .iter()
+            .any(|(_, w, vis, ..)| w.app_id == icon.app_name && vis.0);
 
         if last_running.get(&entity).copied() == Some(is_running) {
             continue;

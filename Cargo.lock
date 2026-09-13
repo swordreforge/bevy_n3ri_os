@@ -6574,6 +6574,7 @@ dependencies = [
  "arboard",
  "bevy",
  "bevy_live_wallpaper",
+ "bevy_tweening",
  "bevy_woff",
  "chrono",
  "euclid",

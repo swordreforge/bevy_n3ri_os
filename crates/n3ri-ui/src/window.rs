@@ -1,10 +1,11 @@
 use crate::cursor::{CursorPosition, UiArea};
-use crate::dock::{AppVisible, IsDragging};
+use crate::dock::{AppVisible, DockIcon, IsDragging};
 use crate::font::N3riFonts;
+use crate::window_anim::{self, WindowAnimating, WindowClosing, WindowMinimizing};
 use bevy::ecs::relationship::Relationship;
 use bevy::prelude::*;
+use bevy_tweening::TweenAnim;
 
-use crate::apps::terminal::TerminalState;
 use crate::topbar::FocusedTitle;
 
 pub const MAX_WINDOW_Z: i32 = 32;
@@ -154,6 +155,9 @@ pub fn spawn_window_with_options(
             },
             AppVisible(true),
             GlobalZIndex(1),
+            window_anim::open_transform(),
+            TweenAnim::new(window_anim::open_tween()),
+            WindowAnimating,
             Node {
                 position_type: PositionType::Absolute,
                 width: Val::Px(width),
@@ -280,7 +284,7 @@ fn window_focus_system(
             &UiGlobalTransform,
             &Visibility,
         ),
-        With<AppWindow>,
+        (With<AppWindow>, Without<WindowClosing>),
     >,
     titlebar_query: Query<(&Interaction, &ChildOf), With<TitleBar>>,
     mut focused: ResMut<FocusedTitle>,
@@ -413,6 +417,7 @@ fn window_drag_start(
     window_query: Query<Entity, With<AppWindow>>,
     window_nodes: Query<&Node, With<AppWindow>>,
     locked_query: Query<(), With<CinematicLocked>>,
+    closing_query: Query<(), With<WindowClosing>>,
     mut is_dragging: ResMut<IsDragging>,
     mut commands: Commands,
 ) {
@@ -439,8 +444,10 @@ fn window_drag_start(
             continue;
         };
 
-        // 凑近状态锁：锁定窗口不可拖拽
-        if locked_query.get(window_entity).is_ok() {
+        // 凑近状态锁：锁定窗口不可拖拽；关闭动画中不拖拽
+        if locked_query.get(window_entity).is_ok()
+            || closing_query.get(window_entity).is_ok()
+        {
             continue;
         }
 
@@ -504,7 +511,8 @@ fn handle_close_button(
     query: Query<(Entity, &CloseButton, &Interaction)>,
     child_of_query: Query<&ChildOf>,
     window_query: Query<&AppWindow>,
-    mut terminal_state: ResMut<TerminalState>,
+    transform_query: Query<&UiTransform, With<AppWindow>>,
+    closing_query: Query<(), With<WindowClosing>>,
     mut commands: Commands,
 ) {
     if !mouse.just_pressed(MouseButton::Left) {
@@ -529,14 +537,26 @@ fn handle_close_button(
             }
         }
 
-        if let Some(window_entity) = window_entity {
-            if let Ok(app) = window_query.get(window_entity) {
-                if app.app_id == "terminal" {
-                    terminal_state.reset();
-                }
-            }
-            commands.entity(window_entity).despawn();
+        let Some(window_entity) = window_entity else {
+            continue;
+        };
+        // 关闭动画进行中：不重复触发
+        if closing_query.get(window_entity).is_ok() {
+            continue;
         }
+        // 终端重置推迟到动画结束（window_anim::finish_window_anims），避免关闭动画期间白屏
+        let Ok(transform) = transform_query.get(window_entity) else {
+            continue;
+        };
+
+        commands
+            .entity(window_entity)
+            .insert((
+                TweenAnim::new(window_anim::close_tween(transform)),
+                WindowClosing,
+                WindowAnimating,
+            ))
+            .remove::<(WindowMinimizing, WindowDrag)>();
     }
 }
 
@@ -545,8 +565,11 @@ fn handle_minimize_button(
     query: Query<(Entity, &MinimizeButton, &Interaction)>,
     child_of_query: Query<&ChildOf>,
     window_query: Query<Entity, With<AppWindow>>,
+    app_query: Query<&AppWindow>,
+    transform_query: Query<(&UiTransform, &UiGlobalTransform, &ComputedNode), With<AppWindow>>,
+    icon_query: Query<(&DockIcon, &UiGlobalTransform)>,
     locked_query: Query<(), With<CinematicLocked>>,
-    mut app_visible_query: Query<&mut AppVisible>,
+    busy_query: Query<(), With<WindowAnimating>>,
     mut commands: Commands,
 ) {
     if !mouse.just_pressed(MouseButton::Left) {
@@ -564,17 +587,36 @@ fn handle_minimize_button(
             continue;
         };
 
-        // 凑近状态锁：锁定窗口不可最小化
-        if locked_query.get(window_entity).is_ok() {
+        // 凑近状态锁：锁定窗口不可最小化；任一动画进行中不重复触发
+        if locked_query.get(window_entity).is_ok()
+            || busy_query.get(window_entity).is_ok()
+        {
             continue;
         }
 
-        if let Ok(mut vis) = app_visible_query.get_mut(window_entity) {
-            vis.0 = false;
-        } else {
-            commands.entity(window_entity).insert(AppVisible(false));
-        }
-        commands.entity(window_entity).insert(Visibility::Hidden);
+        let Ok(app) = app_query.get(window_entity) else {
+            continue;
+        };
+        let Ok((transform, global, node)) = transform_query.get(window_entity) else {
+            continue;
+        };
+        let delta = match window_anim::dock_icon_center(&app.app_id, &icon_query) {
+            Some(icon_center) => window_anim::dock_delta(
+                node.inverse_scale_factor,
+                global.translation,
+                icon_center,
+            ),
+            None => Vec2::ZERO,
+        };
+
+        commands
+            .entity(window_entity)
+            .insert((
+                TweenAnim::new(window_anim::minimize_tween(transform, delta)),
+                WindowMinimizing,
+                WindowAnimating,
+            ))
+            .remove::<WindowDrag>();
     }
 }
 
@@ -585,6 +627,7 @@ fn handle_maximize_button(
     child_of_query: Query<&ChildOf>,
     window_query: Query<Entity, With<AppWindow>>,
     locked_query: Query<(), With<CinematicLocked>>,
+    busy_query: Query<(), With<WindowAnimating>>,
     mut node_query: Query<&mut Node, With<AppWindow>>,
     original_layout_query: Query<&WindowOriginalLayout>,
     mut commands: Commands,
@@ -604,8 +647,10 @@ fn handle_maximize_button(
             continue;
         };
 
-        // 凑近状态锁：锁定窗口不可最大化
-        if locked_query.get(window_entity).is_ok() {
+        // 凑近状态锁：锁定窗口不可最大化；关闭/最小化动画进行中不响应
+        if locked_query.get(window_entity).is_ok()
+            || busy_query.get(window_entity).is_ok()
+        {
             continue;
         }
 

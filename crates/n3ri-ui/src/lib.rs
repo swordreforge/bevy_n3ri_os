@@ -23,6 +23,7 @@ pub mod wallpaper_bridge;
 pub mod wallpaper_ime;
 pub mod wallpaper_keyboard;
 pub mod window;
+pub mod window_anim;
 
 pub use chat_capsule::ChatCapsuleState;
 
@@ -37,11 +38,17 @@ impl Plugin for N3riUiPlugin {
         
         app.add_systems(Startup, font::load_fonts);
 
+        // n3ri-live2d 也会注册同一插件，去重避免重复添加。
+        if !app.is_plugin_added::<bevy_tweening::TweeningPlugin>() {
+            app.add_plugins(bevy_tweening::TweeningPlugin);
+        }
+
         app.add_plugins((
             topbar::TopbarPlugin,
             desktop::DesktopFxPlugin,
             dock::DockPlugin,
             window::WindowPlugin,
+            window_anim::WindowAnimPlugin,
             agent_bridge::AgentBridgePlugin,
             snap::SnapPlugin,
             resize::ResizePlugin,

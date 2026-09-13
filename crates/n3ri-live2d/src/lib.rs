@@ -47,6 +47,10 @@ pub struct N3riLive2dPlugin;
 
 impl Plugin for N3riLive2dPlugin {
     fn build(&self, app: &mut App) {
+        // TweeningPlugin 是 unique 插件：n3ri-ui 也会注册同一插件，去重避免 panic。
+        if !app.is_plugin_added::<TweeningPlugin>() {
+            app.add_plugins(TweeningPlugin);
+        }
         app.init_asset::<Live2dDrawableMaterial>()
             .init_resource::<PetDisplayImage>()
             .init_resource::<PetHeadImage>()
@@ -58,7 +62,6 @@ impl Plugin for N3riLive2dPlugin {
             .init_resource::<renderer::PetTargetArea>()
             .init_resource::<renderer::PetRenderConfig>()
             .add_plugins(Material2dPlugin::<Live2dDrawableMaterial>::default())
-            .add_plugins(TweeningPlugin)
             .add_systems(Startup, renderer::load_and_setup_pet)
             .add_systems(
                 Update,

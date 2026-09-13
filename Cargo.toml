@@ -1,3 +1,5 @@
+#notice: if you are in rust non-nightly version try #the "cargo-features" and change panic to panic = "abort" 
+cargo-features = ["panic-immediate-abort"]
 [workspace]
 resolver = "2"
 members = [
@@ -25,6 +27,11 @@ reqwest = { version = "0.12", default-features = false, features = ["blocking", 
 lto = "fat"
 codegen-units = 1
 strip = "symbols"
+panic = "immediate-abort"
+debug = 0
+
+[profile.release.package."*"]
+opt-level = 3
 
 # ── Servo 浏览器引擎补丁（移植自 refer/wgpu-graft，仅在引入 servo 后生效）──
 #

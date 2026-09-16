@@ -255,10 +255,7 @@ fn spawn_content(parent: &mut ChildSpawnerCommands, fonts: &N3riFonts) {
 fn load_directory(parent: &mut ChildSpawnerCommands, fonts: &N3riFonts, path: &str) {
     let rel = format!("nori/app-icons/files/{}", path.trim_matches('/'));
 
-    let mut entries: Vec<_> = crate::content::list_dir(&rel)
-        .into_iter()
-        .filter(|(name, _)| !name.ends_with(".pdf.png"))
-        .collect();
+    let mut entries: Vec<_> = crate::content::list_dir(&rel).into_iter().collect();
 
     entries.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
 
@@ -424,15 +421,10 @@ fn files_item_click(
             ) {
                 continue;
             }
-            let png_rel = format!("{rel}.png");
-            if crate::content::exists(&png_rel) {
-                crate::apps::image_viewer::spawn_image_viewer_direct(&mut commands, &png_rel, &fonts_data, &asset_server);
-            } else {
-                let tip = std::env::temp_dir().join("n3ri_pdf_preview_missing.txt");
-                fs::write(&tip, "无法预览:此文档已损坏,或缺少预览数据。\n\n……这一份似乎和其余的报告不太一样。建议不要继续查阅。").ok();
-                if let Some(tip_str) = tip.to_str() {
-                    crate::apps::txt_reader::spawn_txt_reader_direct(&mut commands, tip_str, &fonts_data);
-                }
+            let tip = std::env::temp_dir().join("n3ri_pdf_preview_missing.txt");
+            fs::write(&tip, "无法预览:此文档已损坏,或缺少预览数据。\n\n……这一份似乎和其余的报告不太一样。建议不要继续查阅。").ok();
+            if let Some(tip_str) = tip.to_str() {
+                crate::apps::txt_reader::spawn_txt_reader_direct(&mut commands, tip_str, &fonts_data);
             }
         } else if !item.name.contains('.') {
             // 模拟可执行文件：内容层取字节解压到临时目录执行

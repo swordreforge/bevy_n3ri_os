@@ -10,7 +10,7 @@ use n3ri_core::prelude::*;
 use n3ri_live2d::{
     HeadDisplay, Live2dPet, PetDisplayNode, PetRenderConfig, PetTargetArea,
     spawn_head_display, spawn_pet_display, HeadDisplayWanted, PetDisplayImage,
-    PetHeadImage,
+    PetHeadImage, WallpaperCursor,
 };
 use n3ri_ui::cursor::{CursorPosition, UiArea};
 use n3ri_ui::desktop::DesktopBackgroundMaterial;
@@ -337,6 +337,7 @@ fn run_wallpaper() {
                 chat_rise_sync,
                 chat_emotion_bridge,
                 sync_pet_target_area,
+                sync_wallpaper_cursor,
                 track_satellite_child,
                 sync_pet_render_config,
                 wallpaper_frame_pace,
@@ -400,6 +401,31 @@ fn sync_pet_target_area(
         if target.logical != next.logical || target.scale != next.scale {
             *target = next;
         }
+    }
+}
+
+/// 壁纸模式：`CursorPosition` → live2d `WallpaperCursor` 镜像。
+/// pet 的摸头/头像命中系统不读主窗（壁纸模式无主窗），只认本镜像；
+/// 光标离屏时置 `None`，命中系统按无光标处理并复位拖拽速度基线。
+fn sync_wallpaper_cursor(
+    cursor: Res<CursorPosition>,
+    area: Res<UiArea>,
+    mut mirror: ResMut<WallpaperCursor>,
+) {
+    if !cursor.active {
+        if mirror.physical.is_some() || mirror.logical.is_some() {
+            mirror.physical = None;
+            mirror.logical = None;
+        }
+        mirror.area = area.0;
+        return;
+    }
+    let next_physical = Some(cursor.physical);
+    let next_logical = Some(cursor.logical);
+    if mirror.physical != next_physical || mirror.logical != next_logical || mirror.area != area.0 {
+        mirror.physical = next_physical;
+        mirror.logical = next_logical;
+        mirror.area = area.0;
     }
 }
 

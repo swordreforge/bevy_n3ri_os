@@ -379,6 +379,7 @@ pub fn check_idle_timeout(
 #[allow(clippy::too_many_arguments)]
 pub fn detect_petting(
     windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
+    wallpaper: Option<Res<WallpaperCursor>>,
     display: Query<(&ComputedNode, &UiGlobalTransform), With<crate::renderer::PetDisplayNode>>,
     mapping: Option<Res<PetMapping>>,
     view_size: Option<Res<PetViewSize>>,
@@ -389,13 +390,25 @@ pub fn detect_petting(
 ) {
     state.cooldown_timer = (state.cooldown_timer - time.delta_secs()).max(0.0);
 
-    let Ok(window) = windows.single() else {
-        return;
-    };
-
-    let Some(cursor) = window.cursor_position() else {
-        state.last_mouse_pos = None;
-        return;
+    // 壁纸模式无主窗：光标来自二进制侧同步的镜像（physical = UI 渲染空间像素）；
+    // 窗口模式走主窗 cursor_position（变换到 physical 供命中测试）。
+    let cursor = match windows.single() {
+        Ok(window) => {
+            let Some(cursor) = window.cursor_position() else {
+                state.last_mouse_pos = None;
+                return;
+            };
+            window
+                .physical_cursor_position()
+                .unwrap_or(cursor * window.scale_factor())
+        }
+        Err(_) => match wallpaper.as_ref().and_then(|w| w.physical) {
+            Some(pos) => pos,
+            None => {
+                state.last_mouse_pos = None;
+                return;
+            }
+        },
     };
 
     let Some(mapping) = mapping else {
@@ -456,8 +469,24 @@ pub struct HeadPettingState {
     pub last_mouse_pos: Option<Vec2>,
 }
 
+/// 壁纸模式光标镜像。live2d 不依赖 n3ri-ui，由二进制侧每帧从
+/// `CursorPosition` 同步写入：
+/// - `physical`：UI 渲染空间像素，与 `ComputedNode`/`UiGlobalTransform` 同空间，
+///   供 `detect_petting`（节点矩形命中）使用；
+/// - `logical`：UI 逻辑像素，与 `Node` style Px + 界面尺寸同空间，
+///   供 `detect_head_petting`（右下角 150px 头像命中）使用；
+/// - `area`：界面逻辑尺寸（壁纸 surface 大小），替代 `window.width/height`。
+/// 窗口模式走 `PrimaryWindow`，本资源保持 `None` 不参与。
+#[derive(Resource, Default)]
+pub struct WallpaperCursor {
+    pub physical: Option<Vec2>,
+    pub logical: Option<Vec2>,
+    pub area: Vec2,
+}
+
 pub fn detect_head_petting(
     windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
+    wallpaper: Option<Res<WallpaperCursor>>,
     head: Query<(&Node, &Visibility), With<HeadDisplay>>,
     mut state: ResMut<HeadPettingState>,
     mut pet: ResMut<Live2dPet>,
@@ -465,13 +494,26 @@ pub fn detect_head_petting(
 ) {
     state.cooldown_timer = (state.cooldown_timer - time.delta_secs()).max(0.0);
 
-    let Ok(window) = windows.single() else {
-        return;
-    };
-
-    let Some(cursor) = window.cursor_position() else {
-        state.last_mouse_pos = None;
-        return;
+    // 头像命中走逻辑空间（Node style Px + 界面尺寸）：
+    // 窗口模式 = 主窗 cursor_position + 主窗尺寸；壁纸模式 = 镜像 logical + 镜像 area。
+    let (cursor, screen_w, screen_h) = match windows.single() {
+        Ok(window) => match window.cursor_position() {
+            Some(cursor) => (cursor, window.width(), window.height()),
+            None => {
+                state.last_mouse_pos = None;
+                return;
+            }
+        },
+        Err(_) => match wallpaper
+            .as_ref()
+            .and_then(|w| w.logical.map(|pos| (pos, w.area)))
+        {
+            Some((pos, area)) if area.x > 0.0 && area.y > 0.0 => (pos, area.x, area.y),
+            _ => {
+                state.last_mouse_pos = None;
+                return;
+            }
+        },
     };
 
     let Ok((node, vis)) = head.single() else {
@@ -482,9 +524,6 @@ pub fn detect_head_petting(
         state.last_mouse_pos = None;
         return;
     }
-
-    let screen_w = window.width();
-    let screen_h = window.height();
 
     let node_w = match node.width {
         Val::Px(w) => w,

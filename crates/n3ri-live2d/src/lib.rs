@@ -41,7 +41,7 @@ pub use renderer::{
     PetViewSize,
 };
 pub use head_anim::HeadDisplayWanted;
-pub use pet::{HeadHitArea, HeadPettingState, IdleTimer, Live2dPet, PettingState};
+pub use pet::{HeadHitArea, HeadPettingState, IdleTimer, Live2dPet, PettingState, WallpaperCursor};
 
 pub struct N3riLive2dPlugin;
 
@@ -58,6 +58,7 @@ impl Plugin for N3riLive2dPlugin {
             .init_resource::<pet::HeadHitArea>()
             .init_resource::<pet::PettingState>()
             .init_resource::<pet::HeadPettingState>()
+            .init_resource::<pet::WallpaperCursor>()
             .init_resource::<head_anim::HeadDisplayWanted>()
             .init_resource::<renderer::PetTargetArea>()
             .init_resource::<renderer::PetRenderConfig>()

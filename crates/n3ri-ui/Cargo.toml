@@ -21,6 +21,7 @@ n3ri-agent = { path = "../n3ri-agent" }
 bevy_tweening = { workspace = true }
 portable-pty = "0.8"
 bevy_woff = "0.2"
+bevy_document_extend = { version = "0.2.0", default-features = false, features = ["pdf-hayro"] }
 # 壁纸桥接：读取 layer-shell 指针状态/表面信息（vendored，本地补丁增加 axis 滚动捕获）
 bevy_live_wallpaper = { path = "../../vendor/bevy_live_wallpaper", default-features = false, features = ["wayland"] }
 arboard = { version = "3", default-features = false, features = ["wayland-data-control"] }

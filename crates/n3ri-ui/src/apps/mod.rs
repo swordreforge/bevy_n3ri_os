@@ -8,6 +8,7 @@ pub mod international_chess;
 pub mod log_viewer;
 pub mod mail;
 pub mod pictionary;
+pub mod pdf_viewer;
 pub mod seek_treasure;
 pub mod settings;
 pub mod signal;

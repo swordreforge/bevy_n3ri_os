@@ -370,6 +370,7 @@ fn files_item_click(
     mut commands: Commands,
     fonts: Res<N3riFonts>,
     asset_server: Res<AssetServer>,
+    mut images: ResMut<Assets<Image>>,
     mut terminal: ResMut<crate::apps::terminal::TerminalState>,
     dock_parent_q: Query<&bevy::prelude::ChildOf, With<crate::dock::Dock>>,
 ) {
@@ -415,6 +416,14 @@ fn files_item_click(
         if item.name.ends_with(".log") {
             crate::apps::log_viewer::spawn_log_viewer_direct(&mut commands, &rel, &fonts_data, &asset_server);
         } else if item.name.ends_with(".pdf") {
+            if crate::apps::pdf_viewer::spawn_pdf_viewer_direct(
+                &mut commands,
+                &mut images,
+                &rel,
+                &fonts_data,
+            ) {
+                continue;
+            }
             let png_rel = format!("{rel}.png");
             if crate::content::exists(&png_rel) {
                 crate::apps::image_viewer::spawn_image_viewer_direct(&mut commands, &png_rel, &fonts_data, &asset_server);

@@ -62,6 +62,7 @@ impl Plugin for N3riUiPlugin {
         ));
         app.add_plugins(apps::txt_reader::TxtReaderPlugin);
         app.add_plugins(apps::log_viewer::LogViewerPlugin);
+        app.add_plugins(apps::pdf_viewer::PdfViewerPlugin);
         app.add_plugins((
             apps::image_viewer::ImageViewerPlugin,
             apps::international_chess::InternationalChessPlugin,

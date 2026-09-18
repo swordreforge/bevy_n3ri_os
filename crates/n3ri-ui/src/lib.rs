@@ -15,6 +15,7 @@ pub mod desktop;
 pub mod dock;
 pub mod font;
 pub mod input_focus;
+pub mod pure_mode;
 pub mod resize;
 pub mod scroll;
 pub mod snap;
@@ -45,23 +46,22 @@ impl Plugin for N3riUiPlugin {
             app.add_plugins(bevy_tweening::TweeningPlugin);
         }
 
-        app.add_plugins((
-            topbar::TopbarPlugin,
-            desktop::DesktopFxPlugin,
-            dock::DockPlugin,
-            window::WindowPlugin,
-            window_anim::WindowAnimPlugin,
-            agent_bridge::AgentBridgePlugin,
-            snap::SnapPlugin,
-            resize::ResizePlugin,
-            scroll::ScrollPlugin,
-            chat_capsule::ChatCapsulePlugin,
-            apps::credits::CreditsPlugin,
-            apps::clicker::ClickerPlugin,
-            apps::settings::SettingsPlugin,
-            apps::terminal::TerminalPlugin,
-            apps::files::FilesPlugin,
-        ));
+        app.add_plugins(topbar::TopbarPlugin);
+        app.add_plugins(desktop::DesktopFxPlugin);
+        app.add_plugins(dock::DockPlugin);
+        app.add_plugins(pure_mode::PureModePlugin);
+        app.add_plugins(window::WindowPlugin);
+        app.add_plugins(window_anim::WindowAnimPlugin);
+        app.add_plugins(agent_bridge::AgentBridgePlugin);
+        app.add_plugins(snap::SnapPlugin);
+        app.add_plugins(resize::ResizePlugin);
+        app.add_plugins(scroll::ScrollPlugin);
+        app.add_plugins(chat_capsule::ChatCapsulePlugin);
+        app.add_plugins(apps::credits::CreditsPlugin);
+        app.add_plugins(apps::clicker::ClickerPlugin);
+        app.add_plugins(apps::settings::SettingsPlugin);
+        app.add_plugins(apps::terminal::TerminalPlugin);
+        app.add_plugins(apps::files::FilesPlugin);
         app.add_plugins(apps::txt_reader::TxtReaderPlugin);
         app.add_plugins(apps::log_viewer::LogViewerPlugin);
         app.add_plugins(apps::pdf_viewer::PdfViewerPlugin);

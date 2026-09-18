@@ -205,7 +205,12 @@ struct BubbleEntry {
 }
 
 #[derive(Component)]
-struct ChatCapsuleRoot;
+pub struct ChatCapsuleRoot;
+
+/// 右下角胶囊里的 `Ctrl + K` 快捷键徽标文本：纯净模式入口的提示位，
+// 纯净模式接管该快捷键后此处文本同步改写。
+#[derive(Component)]
+pub struct PureShortcutBadge;
 
 #[derive(Component)]
 struct ChatCapsuleDisplay;
@@ -319,6 +324,7 @@ pub fn spawn_chat_capsule(parent: &mut ChildSpawnerCommands, fonts: &N3riFonts) 
                 .with_children(|badge| {
                     badge.spawn((
                         ChatCapsuleShortcut,
+                        PureShortcutBadge,
                         Text::new("Ctrl + K"),
                         TextFont {
                             font: FontSource::Handle(fonts.get(FontContext::Ui)),

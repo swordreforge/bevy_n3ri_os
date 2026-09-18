@@ -60,52 +60,101 @@ struct DockTooltip;
 #[derive(Component)]
 pub struct AppVisible(pub bool);
 
-/// 获取应用的中文显示名称
-fn app_display_name(name: &str) -> &str {
+/// 获取应用的中文显示名称：主题包 `display_names` 覆盖优先，缺失回退内置。
+fn app_display_name(name: &str) -> String {
+    let theme = n3ri_core::theme::resolve_theme();
+    if let Some(custom) = theme.manifest.dock.display_names.get(name) {
+        return custom.clone();
+    }
     match name {
-        "credits" => "致谢",
-        "browser" => "浏览器",
-        "mail" => "邮件",
-        "files" => "文件",
-        "signal" => "通讯",
-        "pictionary" => "你画我猜",
-        "idle" => "算力",
-        "chess" => "国际象棋",
-        "cakeduel" => "蛋糕对决",
-        "codenames" => "森林寻宝",
-        "terminal" => "终端",
-        "settings" => "设置",
-        _ => name,
+        "credits" => "致谢".into(),
+        "browser" => "浏览器".into(),
+        "mail" => "邮件".into(),
+        "files" => "文件".into(),
+        "signal" => "通讯".into(),
+        "pictionary" => "你画我猜".into(),
+        "idle" => "算力".into(),
+        "chess" => "国际象棋".into(),
+        "cakeduel" => "蛋糕对决".into(),
+        "codenames" => "森林寻宝".into(),
+        "terminal" => "终端".into(),
+        "settings" => "设置".into(),
+        _ => name.to_string(),
     }
 }
 
+/// dock 条目 app 名 → 是否有 icon-b（内置默认表）。
+fn default_has_icon_b(name: &str) -> bool {
+    !matches!(name, "credits" | "settings")
+}
+
+/// 内置 dock 顺序（默认）。主题包 `[dock] order/hidden` 在此基础上做路径选取：
+/// order 非空则按其重排（未知 id 忽略，未列出的内置 app 追加在后），hidden 做减法。
+const BUILTIN_DOCK_ORDER: &[&str] = &[
+    "credits",
+    "browser",
+    "mail",
+    "files",
+    "signal",
+    "pictionary",
+    "idle",
+    "chess",
+    "cakeduel",
+    "codenames",
+    "terminal",
+];
+
 enum DockEntry {
-    App {
-        name: &'static str,
-        has_icon_b: bool,
-    },
+    App { name: String, has_icon_b: bool },
     Separator,
 }
 
-pub fn spawn_dock(parent: &mut ChildSpawnerCommands, asset_server: &AssetServer, fonts: &N3riFonts) {
-    let entries: Vec<DockEntry> = vec![
-        DockEntry::App { name: "credits", has_icon_b: false },
-        DockEntry::App { name: "browser", has_icon_b: true },
-        DockEntry::App { name: "mail", has_icon_b: true },
-        DockEntry::App { name: "files", has_icon_b: true },
-        DockEntry::App { name: "signal", has_icon_b: true },
-        DockEntry::App { name: "pictionary", has_icon_b: true },
-        DockEntry::App { name: "idle", has_icon_b: true },
-        DockEntry::App { name: "chess", has_icon_b: true },
-        DockEntry::App { name: "cakeduel", has_icon_b: true },
-        DockEntry::App { name: "codenames", has_icon_b: true },
-        DockEntry::App { name: "terminal", has_icon_b: true },
-        DockEntry::Separator,
-        DockEntry::App {
-            name: "settings",
+fn dock_entries() -> Vec<DockEntry> {
+    let theme = n3ri_core::theme::resolve_theme();
+    let enabled = theme.enabled_apps.clone();
+    let mut order: Vec<String> = if theme.manifest.dock.order.is_empty() {
+        BUILTIN_DOCK_ORDER.iter().map(|s| s.to_string()).collect()
+    } else {
+        let mut seen = std::collections::HashSet::new();
+        let mut out: Vec<String> = Vec::new();
+        for id in &theme.manifest.dock.order {
+            if BUILTIN_DOCK_ORDER.contains(&id.as_str()) && seen.insert(id.clone()) {
+                out.push(id.clone());
+            }
+        }
+        for id in BUILTIN_DOCK_ORDER {
+            if seen.insert(id.to_string()) {
+                out.push(id.to_string());
+            }
+        }
+        out
+    };
+    order.retain(|id| !theme.manifest.dock.hidden.contains(id));
+    if let Some(apps) = enabled.as_ref() {
+        order.retain(|id| apps.contains(id));
+    }
+    let mut entries: Vec<DockEntry> = order
+        .into_iter()
+        .map(|name| DockEntry::App {
+            has_icon_b: default_has_icon_b(&name),
+            name,
+        })
+        .collect();
+    // settings 常驻末尾（除非被 hidden/enabled_apps 拿掉）
+    let settings_off = theme.manifest.dock.hidden.contains(&"settings".to_string())
+        || enabled.as_ref().is_some_and(|a| !a.contains(&"settings".to_string()));
+    if !settings_off {
+        entries.push(DockEntry::Separator);
+        entries.push(DockEntry::App {
+            name: "settings".into(),
             has_icon_b: false,
-        },
-    ];
+        });
+    }
+    entries
+}
+
+pub fn spawn_dock(parent: &mut ChildSpawnerCommands, asset_server: &AssetServer, fonts: &N3riFonts) {
+    let entries: Vec<DockEntry> = dock_entries();
 
     parent
         .spawn((
@@ -150,10 +199,16 @@ pub fn spawn_dock(parent: &mut ChildSpawnerCommands, asset_server: &AssetServer,
                         ));
                     }
                     DockEntry::App { name, has_icon_b } => {
-                        let icon_a: Handle<Image> =
-                            asset_server.load(format!("nori/app-icons/{name}/icon-a.png"));
+                        // 基础图标：主题包 icons/<app>/ → 全局 icons/<app>/ → 内置。
+                        let load = |file: &str| {
+                            asset_server.load(crate::theme_source::theme_asset_path(
+                                asset_server,
+                                &format!("nori/app-icons/{name}/{file}"),
+                            ))
+                        };
+                        let icon_a: Handle<Image> = load("icon-a.png");
                         let icon_b: Option<Handle<Image>> = if *has_icon_b {
-                            Some(asset_server.load(format!("nori/app-icons/{name}/icon-b.png")))
+                            Some(load("icon-b.png"))
                         } else {
                             None
                         };

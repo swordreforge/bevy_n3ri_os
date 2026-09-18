@@ -228,7 +228,12 @@ pub fn spawn_topbar(
                     .with_children(|btn| {
                         btn.spawn((
                             ImageNode {
-                                image: asset_server.load("nori/icon.png"),
+                                image: asset_server.load(
+                                    crate::theme_source::theme_asset_path(
+                                        asset_server,
+                                        "nori/icon.png",
+                                    ),
+                                ),
                                 ..default()
                             },
                             Node {
@@ -261,11 +266,18 @@ pub fn spawn_topbar(
                     ..default()
                 },))
                 .with_children(|right| {
+                    // 顶栏状态图标同样走主题覆盖（`theme://nori/cpu.png` 等）。
+                    let tload = |rel: &str| {
+                        asset_server.load(crate::theme_source::theme_asset_path(
+                            asset_server,
+                            rel,
+                        ))
+                    };
                     let specs: [(PopupKind, Option<Handle<Image>>, &str); 5] = [
-                        (PopupKind::Cpu, Some(asset_server.load("nori/cpu.png")), "--"),
-                        (PopupKind::Battery, Some(asset_server.load("nori/battery.png")), "--"),
-                        (PopupKind::Network, Some(asset_server.load("nori/network.png")), ""),
-                        (PopupKind::Sound, Some(asset_server.load("nori/sound.png")), "--"),
+                        (PopupKind::Cpu, Some(tload("nori/cpu.png")), "--"),
+                        (PopupKind::Battery, Some(tload("nori/battery.png")), "--"),
+                        (PopupKind::Network, Some(tload("nori/network.png")), ""),
+                        (PopupKind::Sound, Some(tload("nori/sound.png")), "--"),
                         (PopupKind::Time, None, "--"),
                     ];
 

@@ -32,12 +32,26 @@ impl N3riFonts {
     }
 }
 
-/// 加载字体资源
+/// 加载字体资源：主题包字体映射优先（`theme.toml [fonts]`），缺失回退内置。
 pub fn load_fonts(mut commands: Commands, asset_server: Res<AssetServer>) {
-    let default = asset_server.load("nori/fonts/sarasa-fixed-sc.woff2");
-    let terminal = asset_server.load("nori/fonts/sarasa-fixed-sc.woff2");
-    let ui = asset_server.load("nori/fonts/sarasa-fixed-sc.woff2");
-    let dock = asset_server.load("nori/fonts/sarasa-fixed-sc.woff2");
+    let theme = n3ri_core::theme::resolve_theme();
+    let pick = |key: Option<&String>| -> String {
+        key.and_then(|rel| {
+            // 主题包/全局 basedir 命中 → 走 theme 源；否则当作普通 assets 相对路径
+            let roots = &theme.overlay_roots;
+            if n3ri_core::theme::find_overlay_file(rel, roots).is_some() {
+                Some(rel.clone())
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| "nori/fonts/sarasa-fixed-sc.woff2".into())
+    };
+    let map = |rel: String| crate::theme_source::theme_asset_path(&asset_server, &rel);
+    let default = asset_server.load(map(pick(theme.manifest.fonts.default.as_ref())));
+    let terminal = asset_server.load(map(pick(theme.manifest.fonts.terminal.as_ref())));
+    let ui = asset_server.load(map(pick(theme.manifest.fonts.ui.as_ref())));
+    let dock = asset_server.load(map(pick(theme.manifest.fonts.dock.as_ref())));
 
     commands.insert_resource(N3riFonts {
         default,

@@ -1,0 +1,48 @@
+# n3ri_os 主题包示例
+#
+# 安装：整目录拷到 ~/.config/n3ri_os/themes/demo/，
+# 并在 ~/.config/n3ri_os/config.toml 写 theme = "demo"。
+# 所有字段都可选：缺失即回退内置默认，不崩。
+#
+# 搜索序（路径选取）：主题包文件 → 全局 ~/.config/n3ri_os/ → 内置 assets → embed → 兜底。
+
+name = "demo"
+
+[colors]
+# ThemeConfig 九键：primary/secondary/background/surface/text/text_muted/accent/error/success
+# 另有 window_bg/title_bar_bg 两键专供窗口装饰（[window] 表优先于此）。
+primary = "#66E0FF"
+text = "#DEEDED"
+window_bg = "#141F33"
+
+[fonts]
+# 四路上下文 → 主题包内相对路径（先找 themes/demo/<rel>，再找 ~/.config/n3ri_os/<rel>）。
+# 缺失回退内置 nori/fonts/sarasa-fixed-sc.woff2。
+terminal = "fonts/custom-terminal.woff2"
+ui = "fonts/custom-ui.woff2"
+
+[dock]
+# order：重排（未知 id 忽略，未列出的内置 app 追加在后）；hidden：减法。
+order = ["terminal", "files", "browser"]
+hidden = []
+# 显示名覆盖（设置页只读提示来源，不在此改会写回 user_overrides）。
+[dock.display_names]
+terminal = "终端"
+
+[window]
+title_bar_height = 32.0
+corner_radius = 10.0
+window_bg = "#141F33F2"
+title_bar_bg = "#0D1424FA"
+
+[background]
+# wallpaper = "wallpaper.jpg"   # 主题包内相对路径（本版预留，背景仍走 shader）
+# shader = "background.wgsl"    # 主题包内相对路径（本版预留：自定义 WGSL 热替换未接线）
+noise = "noise.png"             # 噪声纹理覆盖（缺失回退内置 gradient-noise）
+[background.shader_params]
+speed = 1.0                     # 背景时间流速（CPU 侧 time 缩放）
+
+[live2d]
+# model_dir = "models/my-pet"   # 主题包内模型目录（须含 .model3.json），缺失用内置 ARGNori_web
+scale = 1.0
+# rules_script = "rules.rhai"   # 可选窗口规则脚本（本版预留位，行为仍走内置）

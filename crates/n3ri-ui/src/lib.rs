@@ -18,6 +18,7 @@ pub mod input_focus;
 pub mod resize;
 pub mod scroll;
 pub mod snap;
+pub mod theme_source;
 pub mod topbar;
 pub mod wallpaper_bridge;
 pub mod wallpaper_ime;
@@ -26,6 +27,7 @@ pub mod window;
 pub mod window_anim;
 
 pub use chat_capsule::ChatCapsuleState;
+pub use theme_source::{register_theme_sources, theme_asset_path};
 
 pub struct N3riUiPlugin;
 

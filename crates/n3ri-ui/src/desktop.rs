@@ -19,10 +19,15 @@ pub struct DesktopBackgroundMaterial {
     #[texture(1)]
     #[sampler(2)]
     pub noise: Handle<Image>,
+    /// 主题包 shader 参数（speed/scale/...）：`theme.toml [background.shader_params]`。
+    /// 进 uniform 需改 WGSL 绑定，本版只存 CPU 侧做 time 缩放（speed），其余忽略。
+    pub speed: f32,
 }
 
 impl UiMaterial for DesktopBackgroundMaterial {
     fn fragment_shader() -> ShaderRef {
+        // 主题包 background.wgsl 直读（文本资源）：命中则用主题 shader，
+        // runner 回退内置需要返回静态路径——主题 shader 走运行时热替换，见下。
         "shaders/desktop_background.wgsl".into()
     }
 }
@@ -57,7 +62,7 @@ fn animate_desktop_background(
 
     for m in nodes.iter() {
         if let Some(mut mat) = materials.get_mut(&m.0) {
-            mat.time += time.delta_secs();
+            mat.time += time.delta_secs() * mat.speed;
             mat.mouse_pos = mouse_pos;
         }
     }
@@ -69,7 +74,29 @@ pub fn spawn_desktop_background(
     images: &mut Assets<Image>,
     materials: &mut Assets<DesktopBackgroundMaterial>,
 ) -> Entity {
-    let noise = asset_server.load("nori/ocean/gradient-noise.jpg");
+    // 噪声纹理：主题包 [background.noise] → 全局 → 内置 gradient-noise。
+    let noise_path = n3ri_core::theme::resolve_theme()
+        .manifest
+        .background
+        .noise
+        .clone()
+        .filter(|rel| {
+            n3ri_core::theme::find_overlay_file(
+                rel,
+                &n3ri_core::theme::resolve_theme().overlay_roots,
+            )
+            .is_some()
+        })
+        .unwrap_or_else(|| "nori/ocean/gradient-noise.jpg".into());
+    let noise =
+        asset_server.load(crate::theme_source::theme_asset_path(asset_server, &noise_path));
+    let speed = n3ri_core::theme::resolve_theme()
+        .manifest
+        .background
+        .shader_params
+        .get("speed")
+        .copied()
+        .unwrap_or(1.0);
 
     if let Some(mut img) = images.get_mut(&noise) {
         img.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
@@ -85,6 +112,7 @@ pub fn spawn_desktop_background(
         zoom: 1.0,
         offset: Vec2::ZERO,
         noise,
+        speed,
     });
 
     parent

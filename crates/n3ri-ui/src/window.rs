@@ -85,6 +85,56 @@ const DOCK_TOTAL_HEIGHT: f32 = DOCK_BOTTOM_MARGIN + DOCK_ICON_SIZE + 10.0;
 const WINDOW_BG: Color = Color::srgba(0.08, 0.12, 0.2, 0.95);
 const TITLE_BAR_BG: Color = Color::srgba(0.05, 0.08, 0.14, 0.98);
 
+/// 窗口装饰（主题包 `[window]`）：标题栏高/圆角/颜色声明式覆盖，缺失回退 const。
+/// spawn 时读一次，不做热重载。
+#[derive(Clone, Copy)]
+pub struct WindowDecor {
+    pub title_bar_height: f32,
+    pub corner_radius: f32,
+    pub window_bg: Color,
+    pub title_bar_bg: Color,
+}
+
+impl Default for WindowDecor {
+    fn default() -> Self {
+        Self {
+            title_bar_height: TITLE_BAR_HEIGHT,
+            corner_radius: 10.0,
+            window_bg: WINDOW_BG,
+            title_bar_bg: TITLE_BAR_BG,
+        }
+    }
+}
+
+fn srgb(hex: [f32; 4]) -> Color {
+    Color::srgba(hex[0], hex[1], hex[2], hex[3])
+}
+
+pub fn window_decor() -> WindowDecor {
+    let theme = n3ri_core::theme::resolve_theme();
+    let w = &theme.manifest.window;
+    let over = &theme.overrides.colors;
+    let color = |key: &str, fallback: Color| {
+        over.get(key)
+            .or_else(|| theme.manifest.colors.get(key))
+            .and_then(|s| n3ri_core::theme::parse_color(s))
+            .map(srgb)
+            .unwrap_or(fallback)
+    };
+    // [window] 表优先于 [colors] 表，同名字段。
+    let wcolor = |wval: &str, key: &str, fallback: Color| {
+        n3ri_core::theme::parse_color(wval)
+            .map(srgb)
+            .unwrap_or_else(|| color(key, fallback))
+    };
+    WindowDecor {
+        title_bar_height: w.title_bar_height,
+        corner_radius: w.corner_radius,
+        window_bg: wcolor(&w.window_bg, "window_bg", WINDOW_BG),
+        title_bar_bg: wcolor(&w.title_bar_bg, "title_bar_bg", TITLE_BAR_BG),
+    }
+}
+
 #[derive(Component)]
 pub struct AppWindow {
     pub title: String,
@@ -144,7 +194,8 @@ pub fn spawn_window_with_options(
     fonts: &N3riFonts,
     show_minimize: bool,
 ) -> Entity {
-    let win_height = height + TITLE_BAR_HEIGHT;
+    let decor = window_decor();
+    let win_height = height + decor.title_bar_height;
     let init_top = TOPBAR_HEIGHT + 40.0;
     parent
         .spawn((
@@ -165,11 +216,11 @@ pub fn spawn_window_with_options(
                 flex_direction: FlexDirection::Column,
                 top: Val::Px(init_top),
                 left: Val::Px(((1920.0 - width) / 2.0).max(0.0)),
-                border_radius: BorderRadius::all(Val::Px(10.0)),
+                border_radius: BorderRadius::all(Val::Px(decor.corner_radius)),
                 overflow: Overflow::hidden(),
                 ..default()
             },
-            BackgroundColor(WINDOW_BG),
+            BackgroundColor(decor.window_bg),
         ))
         .with_children(|window| {
             window
@@ -178,7 +229,7 @@ pub fn spawn_window_with_options(
                     Button,
                     Node {
                         width: Val::Percent(100.0),
-                        height: Val::Px(TITLE_BAR_HEIGHT),
+                        height: Val::Px(decor.title_bar_height),
                         padding: UiRect {
                             left: Val::Px(12.0),
                             right: Val::Px(12.0),
@@ -188,14 +239,14 @@ pub fn spawn_window_with_options(
                         justify_content: JustifyContent::SpaceBetween,
                         display: Display::Flex,
                         border_radius: BorderRadius {
-                            top_left: Val::Px(10.0),
-                            top_right: Val::Px(10.0),
+                            top_left: Val::Px(decor.corner_radius),
+                            top_right: Val::Px(decor.corner_radius),
                             bottom_left: Val::Px(0.0),
                             bottom_right: Val::Px(0.0),
                         },
                         ..default()
                     },
-                    BackgroundColor(TITLE_BAR_BG),
+                    BackgroundColor(decor.title_bar_bg),
                 ))
                 .with_children(|title_bar| {
                     title_bar

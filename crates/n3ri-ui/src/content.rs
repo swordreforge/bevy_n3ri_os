@@ -37,10 +37,19 @@ mod embedded {
 }
 
 /// 读取内容字节。`path` 为 assets 相对路径或绝对路径（临时文件）。
+/// 搜索序：主题包 → 全局 basedir → 内置 assets → embed。
 pub fn read_bytes(path: &str) -> Option<Vec<u8>> {
     let p = Path::new(path);
     if p.is_absolute() {
         return std::fs::read(p).ok();
+    }
+    if !path.contains("..") {
+        let theme = n3ri_core::theme::resolve_theme();
+        if let Some(found) = n3ri_core::theme::find_overlay_file(path, &theme.overlay_roots) {
+            if let Ok(b) = std::fs::read(&found) {
+                return Some(b);
+            }
+        }
     }
     if let Some(root) = assets_root() {
         let full = root.join(p);

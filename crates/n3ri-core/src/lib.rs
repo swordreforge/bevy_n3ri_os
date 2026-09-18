@@ -10,12 +10,14 @@ pub mod config;
 pub mod events;
 pub mod music;
 pub mod state;
+pub mod theme;
 
 use bevy::prelude::*;
 
 use config::{OsConfig, ThemeConfig, UserSettings};
 use music::{MusicLibrary, MusicStatus};
 use state::{DesktopState, OsState};
+use theme::{N3riConfig, ResolvedTheme};
 
 #[derive(Default)]
 pub struct N3riCorePlugin {
@@ -27,6 +29,11 @@ impl Plugin for N3riCorePlugin {
         app.insert_resource(self.config.clone());
         app.insert_resource(ThemeConfig::default());
         app.insert_resource(UserSettings::load());
+        // 主题包包装器：默认内置 + 外部文件覆盖。无主题时 manifest 全空，只回退。
+        let resolved = ResolvedTheme::from(());
+        apply_theme_colors(&mut app.world_mut(), &resolved);
+        app.insert_resource(N3riConfig::from(&resolved));
+        app.insert_resource(resolved);
         app.init_resource::<state::BootState>();
         app.init_resource::<state::LoadState>();
 
@@ -79,5 +86,49 @@ pub mod prelude {
     pub use crate::events::*;
     pub use crate::music::{MusicCommand, MusicLibrary, MusicStatus, MusicTrack, PlayMode};
     pub use crate::state::{AppId, BootState, DesktopState, LoadPhase, LoadState, OsState};
+    pub use crate::theme::{N3riConfig, ResolvedTheme};
     pub use crate::N3riCorePlugin;
+}
+
+/// 主题 `[colors]` → [`ThemeConfig`]：只覆盖能解析的键，未知键忽略，失败回退默认。
+fn apply_theme_colors(world: &mut World, resolved: &ResolvedTheme) {
+    use config::ThemeConfig;
+    let mut theme = ThemeConfig::default();
+    let get = |key: &str| {
+        resolved
+            .overrides
+            .colors
+            .get(key)
+            .or_else(|| resolved.manifest.colors.get(key))
+            .and_then(|s| theme::parse_color(s))
+            .map(|[r, g, b, a]| Color::srgba(r, g, b, a))
+    };
+    if let Some(c) = get("primary") {
+        theme.primary = c;
+    }
+    if let Some(c) = get("secondary") {
+        theme.secondary = c;
+    }
+    if let Some(c) = get("background") {
+        theme.background = c;
+    }
+    if let Some(c) = get("surface") {
+        theme.surface = c;
+    }
+    if let Some(c) = get("text") {
+        theme.text = c;
+    }
+    if let Some(c) = get("text_muted") {
+        theme.text_muted = c;
+    }
+    if let Some(c) = get("accent") {
+        theme.accent = c;
+    }
+    if let Some(c) = get("error") {
+        theme.error = c;
+    }
+    if let Some(c) = get("success") {
+        theme.success = c;
+    }
+    world.insert_resource(theme);
 }

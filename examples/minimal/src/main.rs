@@ -21,7 +21,7 @@ use n3ri_ui::wallpaper_bridge::{
 use n3ri_ui::wallpaper_ime::WallpaperImePlugin;
 use n3ri_ui::wallpaper_keyboard::WallpaperKeyboardPlugin;
 use n3ri_ui::window::AppWindow;
-use n3ri_ui::N3riUiPlugin;
+use n3ri_ui::{register_theme_sources, N3riUiPlugin};
 use n3ri_ui::chat_capsule::{ChatEmotionEvent, ChatRise};
 use std::io::{Read, Write};
 use x11rb::connection::Connection;
@@ -207,8 +207,11 @@ fn run_windowed() {
                 file_path: "../../assets".into(),
                 ..default()
             }),
-    )
-        .add_plugins(N3riCorePlugin::default())
+    );
+    // 主题源（theme:// + theme-global://）必须在 AssetPlugin::build 消费 builders 之前注册：
+    // DefaultPlugins 整组已加，N3riUiPlugin 还没加，此处插入正好。
+    register_theme_sources(&mut app);
+    app.add_plugins(N3riCorePlugin::default())
         .add_plugins(N3riUiPlugin)
         .add_plugins(n3ri_agent::AgentPlugin)
         .add_plugins(MusicPlayerPlugin)
@@ -283,8 +286,9 @@ fn run_wallpaper() {
                 file_path: "../../assets".into(),
                 ..default()
             }),
-    )
-        .add_plugins(N3riCorePlugin::default())
+    );
+    register_theme_sources(&mut app);
+    app.add_plugins(N3riCorePlugin::default())
         .add_plugins(N3riUiPlugin)
         .add_plugins(n3ri_agent::AgentPlugin)
         .add_plugins(MusicPlayerPlugin)

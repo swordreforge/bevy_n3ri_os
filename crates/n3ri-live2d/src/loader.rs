@@ -22,7 +22,49 @@ use mocari::{
 
 /// Model directory relative to the assets root (same convention as
 /// `asset_server.load("nori/...")` calls elsewhere in the app).
+/// 主题包 `[live2d] model_dir` 命中（主题包内目录含 .model3.json）则改走主题模型。
 pub const MODEL_DIR: &str = "nori/ARGNori_web";
+
+/// 主题模型目录（主题包内相对路径）：命中返回主题包内绝对目录。
+pub fn theme_model_dir() -> Option<PathBuf> {
+    // n3ri-live2d 不依赖 n3ri-core（避免核心被主题拖入 bevy 全量），此处直读环境：
+    // N3RI_CONFIG / ~/.config/n3ri_os + config.toml[theme] + themes/<t>/theme.toml[live2d].model_dir
+    let base = std::env::var("N3RI_CONFIG").ok().filter(|s| !s.is_empty()).map(PathBuf::from).or_else(|| {
+        dirs::config_dir().map(|d| d.join("n3ri_os"))
+    })?;
+    let cfg_text = std::fs::read_to_string(base.join("config.toml")).ok()?;
+    let theme_name: String = cfg_text
+        .lines()
+        .filter_map(|l| {
+            let l = l.trim();
+            l.strip_prefix("theme")
+                .and_then(|r| r.trim().strip_prefix('='))
+                .map(|v| v.trim().trim_matches(['"', '\'']).to_string())
+        })
+        .next()?;
+    if theme_name.is_empty() {
+        return None;
+    }
+    let manifest = std::fs::read_to_string(base.join("themes").join(&theme_name).join("theme.toml")).ok()?;
+    let rel: String = manifest
+        .lines()
+        .filter_map(|l| {
+            let l = l.trim();
+            l.strip_prefix("model_dir")
+                .and_then(|r| r.trim().strip_prefix('='))
+                .map(|v| v.trim().trim_matches(['"', '\'']).to_string())
+        })
+        .next()?;
+    if rel.is_empty() || rel.contains("..") {
+        return None;
+    }
+    let dir = base.join("themes").join(&theme_name).join(&rel);
+    // 含 .model3.json 才算有效主题模型目录
+    let valid = std::fs::read_dir(&dir).ok()?.flatten().any(|e| {
+        e.path().is_file() && e.path().to_string_lossy().ends_with(".model3.json")
+    });
+    valid.then_some(dir)
+}
 
 /// Motion groups played concurrently, each with its own player so they don't
 /// fade each other out.
@@ -141,13 +183,29 @@ fn parse_component<T>(
 
 /// Load the pet model. Returns Err (not panic) on any failure so the desktop
 /// stays usable without the pet.
+/// 搜索序：主题包模型目录 → 内置 assets → embed。
 pub fn load_pet() -> Result<Live2dPet, String> {
+    if let Some(theme_dir) = theme_model_dir() {
+        // 主题模型：目录直读（moc3/physics/motions 全在主题包内）
+        match load_pet_from_dir(Some(theme_dir.as_path())) {
+            Ok(pet) => return Ok(pet),
+            Err(e) => {
+                bevy::log::warn!("theme live2d model failed ({theme_dir:?}: {e}), fallback builtin");
+            }
+        }
+    }
     let disk_dir = resolve_assets_dir()
         .ok()
         .map(|a| a.join(MODEL_DIR))
         .filter(|d| d.is_dir());
     let disk_dir: Option<&Path> = disk_dir.as_deref();
+    load_pet_from_dir(disk_dir)
+}
 
+/// 从给定模型目录加载（主题包绝对目录 / 内置 assets 子目录 / None=仅 embed）。
+fn load_pet_from_dir(disk_dir: Option<&Path>) -> Result<Live2dPet, String> {
+    // embed-model 回退只对内置有效：主题包目录显式给出时不再查编译期表，
+    // 避免主题模型缺文件时静默混入内置文件。
     let (json_rel, json_bytes) = find_model3_json(disk_dir)?;
     let json_text =
         std::str::from_utf8(&json_bytes).map_err(|e| format!("parse {json_rel}: {e}"))?;

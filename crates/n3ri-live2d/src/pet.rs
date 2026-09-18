@@ -171,6 +171,11 @@ impl Default for PettingState {
 pub struct Live2dPet {
     pub runtime: ModelRuntime,
     pub texture_paths: Vec<String>,
+    /// 主题模型纹理的 AssetServer 加载前缀：`Some((主题包根, 模型目录名))` 时
+    /// renderer 把纹理镜像进主题包内 `nori/live2d-theme/<模型目录名>/...` 走 `theme://`；
+    /// `None` = 内置 assets 相对路径。存根+目录名而非模型绝对路径——mirror 必须
+    /// 落在 theme 源根之下，模型目录本身的绝对路径拼不进源内相对路径。
+    pub texture_base_override: Option<(std::path::PathBuf, String)>,
 
     pub(crate) players: Vec<MotionPlayer>,
     pub(crate) breath: BreathParamState,
@@ -199,6 +204,7 @@ impl Live2dPet {
         Self {
             runtime,
             texture_paths,
+            texture_base_override: None,
             players,
             breath: BreathParamState::new(),
             fading: Vec::new(),

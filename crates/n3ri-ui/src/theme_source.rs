@@ -14,7 +14,7 @@
 //! 里才消费 builders，所以必须抢在它前面——`main.rs` 里 `DefaultPlugins` 整组先加，
 //! 本函数紧随其后即可）。
 
-use bevy::asset::io::{AssetSourceBuilder, AssetSourceBuilders, file::FileAssetReader};
+use bevy::asset::io::{AssetSourceBuilder, AssetSourceId};
 use bevy::asset::AssetPath;
 use bevy::prelude::*;
 use std::path::PathBuf;
@@ -24,34 +24,49 @@ pub const THEME_SOURCE: &str = "theme";
 /// 全局覆盖源名：根 = `~/.config/n3ri_os/`。
 pub const THEME_GLOBAL_SOURCE: &str = "theme-global";
 
-/// 在 `AssetSourceBuilders` 里注册两个主题源。无主题时源根不存在，
-/// `FileAssetReader` 读到的是 NotFound，调用方自动回退内置。
+/// 主题源的 [`AssetSourceBuilder`] 构造器（不注册，只构造）。
+/// 必须在 `DefaultPlugins` 之前 `app.add_plugins(ThemeSourcePlugin)`，
+/// 因为 Bevy 要求命名源在 `AssetPlugin` 之前注册——`DefaultPlugins` 整组一加，
+/// `AssetServer` 就建好了，事后注册直接报错。
+pub struct ThemeSourcePlugin;
+
+impl Plugin for ThemeSourcePlugin {
+    fn build(&self, app: &mut App) {
+        let theme = n3ri_core::theme::resolve_theme();
+        let theme_root: PathBuf = theme.overlay_roots.first().cloned().unwrap_or_else(|| {
+            n3ri_core::theme::theme_dir(
+                &theme.name.clone().unwrap_or_else(|| "__none__".into()),
+            )
+        });
+        let global_root = n3ri_core::theme::base_dir();
+        // FileAssetReader::new 相对 exe 基址拼接，绝对根用 join 同样成立
+        //（Path::join 遇绝对路径以后者为准）。
+        app.register_asset_source(
+            AssetSourceId::Name(THEME_SOURCE.into()),
+            AssetSourceBuilder::new(move || {
+                Box::new(bevy::asset::io::file::FileAssetReader::new(theme_root.clone()))
+            }),
+        );
+        app.register_asset_source(
+            AssetSourceId::Name(THEME_GLOBAL_SOURCE.into()),
+            AssetSourceBuilder::new(move || {
+                Box::new(bevy::asset::io::file::FileAssetReader::new(global_root.clone()))
+            }),
+        );
+    }
+}
+
+/// 兼容旧调用点：`DefaultPlugins` 之后调用已无意义（`AssetServer` 已建，注册被拒）。
+/// 保留函数避免 main.rs 大改，但内部只做一次存在性自检日志。
+/// 新代码请用 `app.add_plugins(ThemeSourcePlugin)`（在 DefaultPlugins 之前）。
 pub fn register_theme_sources(app: &mut App) {
-    let theme = n3ri_core::theme::resolve_theme();
-    let theme_root: PathBuf = theme.overlay_roots.first().cloned().unwrap_or_else(|| {
-        n3ri_core::theme::theme_dir(
-            &theme
-                .name
-                .clone()
-                .unwrap_or_else(|| "__none__".into()),
-        )
-    });
-    let global_root = n3ri_core::theme::base_dir();
-    let mut builders = app
-        .world_mut()
-        .get_resource_or_init::<AssetSourceBuilders>();
-    // FileAssetReader::new 相对 exe 基址拼接，绝对根用 join 同样成立
-    //（Path::join 遇绝对路径以后者为准）。
-    builders.insert(
-        THEME_SOURCE,
-        AssetSourceBuilder::new(move || {
-            Box::new(FileAssetReader::new(theme_root.clone()))
-        }),
-    );
-    builders.insert(
-        THEME_GLOBAL_SOURCE,
-        AssetSourceBuilder::new(move || Box::new(FileAssetReader::new(global_root.clone()))),
-    );
+    let has_server = app.world().get_resource::<AssetServer>().is_some();
+    if has_server {
+        error!(
+            "register_theme_sources: called after AssetPlugin; \
+             move ThemeSourcePlugin before DefaultPlugins (see main.rs)"
+        );
+    }
 }
 
 /// 主题可覆盖资源的显式路由：`theme://<rel>` → `theme-global://<rel>` → 内置 `<rel>`。

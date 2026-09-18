@@ -27,7 +27,7 @@ pub mod window;
 pub mod window_anim;
 
 pub use chat_capsule::ChatCapsuleState;
-pub use theme_source::{register_theme_sources, theme_asset_path};
+pub use theme_source::{register_theme_sources, theme_asset_path, ThemeSourcePlugin};
 
 pub struct N3riUiPlugin;
 

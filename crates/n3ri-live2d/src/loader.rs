@@ -25,6 +25,40 @@ use mocari::{
 /// 主题包 `[live2d] model_dir` 命中（主题包内目录含 .model3.json）则改走主题模型。
 pub const MODEL_DIR: &str = "nori/ARGNori_web";
 
+/// 从 `key = "value"  # 注释` 行提取字符串值。手写解析必须处理行尾注释，
+/// 否则 `model_dir = "Nori_web"  # 说明文字` 会把注释吞进值里导致目录不存在。
+/// `#` 在引号内不算注释（颜色值 `"#112233"` 不会被截断）。
+fn toml_string_value(line: &str, key: &str) -> Option<String> {
+    let rest = line.trim().strip_prefix(key)?;
+    let rest = rest.trim_start().strip_prefix('=')?.trim_start();
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut end = rest.len();
+    for (i, c) in rest.char_indices() {
+        match c {
+            '\'' if !in_double => in_single = !in_single,
+            '"' if !in_single => in_double = !in_double,
+            '#' if !in_single && !in_double => {
+                end = i;
+                break;
+            }
+            _ => {}
+        }
+    }
+    let value = rest[..end].trim();
+    // 去一层成对引号
+    let bytes = value.as_bytes();
+    if bytes.len() >= 2
+        && ((bytes[0] == b'"' && bytes[bytes.len() - 1] == b'"')
+            || (bytes[0] == b'\'' && bytes[bytes.len() - 1] == b'\''))
+    {
+        Some(value[1..value.len() - 1].to_string())
+    } else if value.is_empty() {
+        None
+    } else {
+        Some(value.to_string())
+    }
+}
 /// 主题模型目录（主题包内相对路径）：命中返回主题包内绝对目录。
 pub fn theme_model_dir() -> Option<PathBuf> {
     // n3ri-live2d 不依赖 n3ri-core（避免核心被主题拖入 bevy 全量），此处直读环境：
@@ -35,12 +69,7 @@ pub fn theme_model_dir() -> Option<PathBuf> {
     let cfg_text = std::fs::read_to_string(base.join("config.toml")).ok()?;
     let theme_name: String = cfg_text
         .lines()
-        .filter_map(|l| {
-            let l = l.trim();
-            l.strip_prefix("theme")
-                .and_then(|r| r.trim().strip_prefix('='))
-                .map(|v| v.trim().trim_matches(['"', '\'']).to_string())
-        })
+        .filter_map(|l| toml_string_value(l, "theme"))
         .next()?;
     if theme_name.is_empty() {
         return None;
@@ -48,22 +77,82 @@ pub fn theme_model_dir() -> Option<PathBuf> {
     let manifest = std::fs::read_to_string(base.join("themes").join(&theme_name).join("theme.toml")).ok()?;
     let rel: String = manifest
         .lines()
-        .filter_map(|l| {
-            let l = l.trim();
-            l.strip_prefix("model_dir")
-                .and_then(|r| r.trim().strip_prefix('='))
-                .map(|v| v.trim().trim_matches(['"', '\'']).to_string())
-        })
+        .filter_map(|l| toml_string_value(l, "model_dir"))
         .next()?;
     if rel.is_empty() || rel.contains("..") {
         return None;
     }
     let dir = base.join("themes").join(&theme_name).join(&rel);
-    // 含 .model3.json 才算有效主题模型目录
-    let valid = std::fs::read_dir(&dir).ok()?.flatten().any(|e| {
-        e.path().is_file() && e.path().to_string_lossy().ends_with(".model3.json")
-    });
-    valid.then_some(dir)
+    // 主题模型必须是完整自洽目录：model3.json 可解析 + moc/全部纹理/motions 首文件
+    // 物理存在。纹理走 AssetServer（ktx2/png 按扩展名分 loader），缺一张整包回退内置，
+    // 不允许只覆盖单张纹理造成 model3 与纹理混用。
+    if validate_theme_model_dir(&dir).is_err() {
+        return None;
+    }
+    Some(dir)
+}
+
+/// 校验主题模型目录自洽：返回 Ok(()) 才允许 `load_pet` 走主题分支。
+fn validate_theme_model_dir(dir: &Path) -> Result<(), String> {
+    let json_name = std::fs::read_dir(dir)
+        .map_err(|e| format!("read dir {}: {e}", dir.display()))?
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .find(|n| n.ends_with(".model3.json"))
+        .ok_or_else(|| format!("no .model3.json in {}", dir.display()))?;
+    let bytes = std::fs::read(dir.join(&json_name))
+        .map_err(|e| format!("read {json_name}: {e}"))?;
+    let text =
+        std::str::from_utf8(&bytes).map_err(|e| format!("parse {json_name}: {e}"))?;
+    let model3: Model3Json =
+        serde_json::from_str(text).map_err(|e| format!("parse {json_name}: {e}"))?;
+    let refs = &model3.file_references;
+    let mut missing: Vec<String> = Vec::new();
+    // moc 必须存在且非空（mocari parse 空文件会直接 panic 级失败，提前拦）
+    let moc_ok = dir.join(&refs.moc).is_file()
+        && std::fs::metadata(dir.join(&refs.moc)).is_ok_and(|m| m.len() > 0);
+    if !moc_ok {
+        missing.push(refs.moc.clone());
+    }
+    // 全部纹理：扩展名决定 loader（.ktx2→ktx2，.png→png），只认文件存在，
+    // 坏文件（如 texture_00_corrupt.png 这类误引用）在 AssetServer 侧失败→整宠回退。
+    for t in &refs.textures {
+        if t.contains("..") || !dir.join(t).is_file() {
+            missing.push(t.clone());
+        }
+    }
+    // motions 至少一组可播：每组首文件存在即可（其余缺失 loader 侧 warn 跳过）。
+    let mut groups_ok = 0;
+    for (_group, list) in &refs.motions {
+        if let Some(first) = list.first() {
+            if !first.file.contains("..") && dir.join(&first.file).is_file() {
+                groups_ok += 1;
+            }
+        }
+    }
+    if refs.motions.is_empty() || groups_ok == 0 {
+        missing.push("<no playable motion>".into());
+    }
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "theme model incomplete in {}: missing {}",
+            dir.display(),
+            missing.join(", ")
+        ))
+    }
+}
+
+/// 集成测试钩子：冒烟测试直接验证目录级加载（纹理只存路径，不进 AssetServer）。
+/// tests/ 集成测试是外部 crate，需公开；生产路径仍走 `load_pet`。
+pub fn load_pet_from_dir_for_test(dir: Option<&Path>) -> Result<Live2dPet, String> {
+    load_pet_from_dir(dir)
+}
+
+/// 主题模型自洽校验的公开入口：`theme_model_dir` 内部已调用，冒烟测试可直调断言。
+pub fn validate_theme_model_dir_pub(dir: &Path) -> Result<(), String> {
+    validate_theme_model_dir(dir)
 }
 
 /// Motion groups played concurrently, each with its own player so they don't
@@ -183,14 +272,29 @@ fn parse_component<T>(
 
 /// Load the pet model. Returns Err (not panic) on any failure so the desktop
 /// stays usable without the pet.
-/// 搜索序：主题包模型目录 → 内置 assets → embed。
+/// 搜索序：主题包模型目录（完整自洽校验通过）→ 内置 assets → embed。
 pub fn load_pet() -> Result<Live2dPet, String> {
     if let Some(theme_dir) = theme_model_dir() {
-        // 主题模型：目录直读（moc3/physics/motions 全在主题包内）
+        // 主题模型：目录直读（moc3/physics/motions 全在主题包内）。
+        // validate 已保证 model3/moc/纹理/motions 首文件存在，此处只可能遇到
+        // 坏文件内容（如 corrupt 纹理/坏 moc），失败则整体回退内置。
+        // renderer 侧 mirror 需要 (主题包根, 模型目录名)：theme_dir = <包根>/<rel>，
+        // rel 即 theme.toml model_dir（如 "Nori_web"），直接复用。
+        let theme_root = theme_dir
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| theme_dir.clone());
+        let model_tag = theme_dir
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "model".into());
         match load_pet_from_dir(Some(theme_dir.as_path())) {
-            Ok(pet) => return Ok(pet),
+            Ok(mut pet) => {
+                pet.texture_base_override = Some((theme_root, model_tag));
+                return Ok(pet);
+            }
             Err(e) => {
-                bevy::log::warn!("theme live2d model failed ({theme_dir:?}: {e}), fallback builtin");
+                bevy::log::warn!("theme live2d model failed ({}: {e}), fallback builtin", theme_dir.display());
             }
         }
     }
@@ -203,9 +307,11 @@ pub fn load_pet() -> Result<Live2dPet, String> {
 }
 
 /// 从给定模型目录加载（主题包绝对目录 / 内置 assets 子目录 / None=仅 embed）。
+/// embed-model 回退只对内置有效：主题包目录显式给出时不再查编译期表，
+/// 避免主题模型缺文件时静默混入内置文件。
+/// 主题分支调用前必须先过 [`validate_theme_model_dir`]（model3/moc/全纹理/motion
+/// 首文件存在性），否则纹理与 model3 混用；此处是第二道门（内容级失败→Err→回退）。
 fn load_pet_from_dir(disk_dir: Option<&Path>) -> Result<Live2dPet, String> {
-    // embed-model 回退只对内置有效：主题包目录显式给出时不再查编译期表，
-    // 避免主题模型缺文件时静默混入内置文件。
     let (json_rel, json_bytes) = find_model3_json(disk_dir)?;
     let json_text =
         std::str::from_utf8(&json_bytes).map_err(|e| format!("parse {json_rel}: {e}"))?;

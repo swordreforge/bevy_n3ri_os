@@ -21,7 +21,7 @@ use n3ri_ui::wallpaper_bridge::{
 use n3ri_ui::wallpaper_ime::WallpaperImePlugin;
 use n3ri_ui::wallpaper_keyboard::WallpaperKeyboardPlugin;
 use n3ri_ui::window::AppWindow;
-use n3ri_ui::{register_theme_sources, N3riUiPlugin};
+use n3ri_ui::{ThemeSourcePlugin, N3riUiPlugin};
 use n3ri_ui::chat_capsule::{ChatEmotionEvent, ChatRise};
 use std::io::{Read, Write};
 use x11rb::connection::Connection;
@@ -184,6 +184,10 @@ fn run_windowed() {
         mode: bevy_embedded_assets::PluginMode::ReplaceDefault,
     });
 
+    // 主题命名源必须在 AssetPlugin（DefaultPlugins 整组）之前注册：
+    // AssetServer 一建好，事后 register_asset_source 直接报错拒绝。
+    app.add_plugins(ThemeSourcePlugin);
+
     app.add_plugins(
         DefaultPlugins
             .set(bevy::log::LogPlugin {
@@ -208,9 +212,6 @@ fn run_windowed() {
                 ..default()
             }),
     );
-    // 主题源（theme:// + theme-global://）必须在 AssetPlugin::build 消费 builders 之前注册：
-    // DefaultPlugins 整组已加，N3riUiPlugin 还没加，此处插入正好。
-    register_theme_sources(&mut app);
     app.add_plugins(N3riCorePlugin::default())
         .add_plugins(N3riUiPlugin)
         .add_plugins(n3ri_agent::AgentPlugin)
@@ -271,6 +272,8 @@ fn run_wallpaper() {
         mode: bevy_embedded_assets::PluginMode::ReplaceDefault,
     });
 
+    app.add_plugins(ThemeSourcePlugin);
+
     app.add_plugins(
         DefaultPlugins
             .set(bevy::log::LogPlugin {
@@ -287,7 +290,6 @@ fn run_wallpaper() {
                 ..default()
             }),
     );
-    register_theme_sources(&mut app);
     app.add_plugins(N3riCorePlugin::default())
         .add_plugins(N3riUiPlugin)
         .add_plugins(n3ri_agent::AgentPlugin)

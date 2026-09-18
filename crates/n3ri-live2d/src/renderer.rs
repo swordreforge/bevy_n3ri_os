@@ -351,6 +351,58 @@ pub struct PetDisplayNode;
 #[derive(Component)]
 pub struct PetDrawable;
 
+// ── theme texture mirror ──
+
+/// 主题纹理源名：复用 n3ri-ui 注册的 `theme://`（根 = 主题包根）。
+/// 镜像路径 = 主题包内 `nori/live2d-theme/<model>/...`，与用户其他主题文件隔离。
+pub const THEME_TEX_SOURCE: &str = "theme";
+
+/// 主题纹理镜像目录名（主题包根下）。
+const THEME_TEX_MIRROR_DIR: &str = "nori/live2d-theme";
+
+/// 把主题模型纹理拷贝进主题包内镜像
+/// （`nori/live2d-theme/<模型目录名>/<rel>`），返回可走 `theme://` 源的相对路径。
+/// 为什么拷贝而不直读绝对路径：Bevy 默认 `UnapprovedPathMode::Forbid` 下
+/// `override_unapproved` 无效（只在 Deny 下认），绝对路径必然被拒→白模；
+/// 镜像走已注册的 File 源，loader 按扩展名分发（ktx2/png 通吃）。
+/// 目录名即 theme.toml `model_dir`（如 `Nori_web`），人类可读、无哈希。
+/// 内容相同跳过拷贝（len+mtime 比对）；失败返回 None（调用方回退白图）。
+fn mirror_theme_texture(
+    theme_root: &std::path::Path,
+    model_tag: &str,
+    model_dir: &std::path::Path,
+    rel: &str,
+) -> Option<String> {
+    if rel.contains("..") || model_tag.contains(|c| c == '/' || c == '\\' || c == '.') {
+        return None;
+    }
+    let src = model_dir.join(rel);
+    if !src.is_file() {
+        return None;
+    }
+    let mrel = format!("{THEME_TEX_MIRROR_DIR}/{model_tag}/{rel}");
+    let dst = theme_root.join(&mrel);
+    let need_copy = match (std::fs::metadata(&src), std::fs::metadata(&dst)) {
+        (Ok(s), Ok(d)) => {
+            s.len() != d.len()
+                || s.modified().ok() != d.modified().ok()
+                || d.len() == 0
+        }
+        _ => true,
+    };
+    if need_copy {
+        if let Some(parent) = dst.parent() {
+            if std::fs::create_dir_all(parent).is_err() {
+                return None;
+            }
+        }
+        if std::fs::copy(&src, &dst).is_err() {
+            return None;
+        }
+    }
+    Some(mrel)
+}
+
 // ── setup (exclusive Startup system) ──
 
 pub fn load_and_setup_pet(world: &mut World) {
@@ -403,11 +455,33 @@ pub fn load_and_setup_pet(world: &mut World) {
     ));
 
     let asset_server = world.resource::<AssetServer>().clone();
+    // 主题模型纹理：拷贝进主题包内 `nori/` 镜像后走 theme:// 源。
+    // 绝不用 loader 侧绝对路径：`override_unapproved` 在默认 Forbid 下无效
+    // （Bevy 只在 Deny 下认 override），且 loader 按扩展名分发（ktx2/png 通吃）。
+    // 镜像 = 主题包自带文件，validate 已做存在性校验，此处拷贝失败只 warn 回退白图。
+    let texture_base = pet.texture_base_override.clone();
     let pet_rel = crate::loader::MODEL_DIR;
     let texture_handles: Vec<Handle<Image>> = pet
         .texture_paths
         .iter()
-        .map(|rel| asset_server.load(format!("{pet_rel}/{rel}")))
+        .map(|rel| match texture_base.as_ref() {
+            Some((theme_root, model_tag)) => {
+                // 模型绝对目录 = 主题包根 + model_tag（load_pet 存的就是这对值）。
+                let model_dir = theme_root.join(model_tag);
+                let mirrored = mirror_theme_texture(theme_root, model_tag, &model_dir, rel);
+                match mirrored {
+                    Some(mrel) => asset_server.load(
+                        bevy::asset::AssetPath::from_path_buf(std::path::PathBuf::from(mrel))
+                            .with_source(THEME_TEX_SOURCE),
+                    ),
+                    None => {
+                        warn!("theme texture mirror failed for {rel}, fallback white");
+                        white_h.clone()
+                    }
+                }
+            }
+            None => asset_server.load(format!("{pet_rel}/{rel}")),
+        })
         .collect();
 
     let pet_camera = world.spawn((
